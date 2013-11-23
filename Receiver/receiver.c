@@ -21,58 +21,80 @@ void initheader (struct header **h) {
     (*h)->ack = 0;
 }
 
+void error (char *e) {
+    perror (e);
+    exit(0);
+}
+
 
 // argv: sender hostname, sender portnumber, filename, Pl, PC
 int main (int argc, char *argv[]) {
-    int sockfd, portno, n, seqno = 0;
+    int sockfd, n, seqno = 0;
     struct sockaddr_in serv_addr;
     struct hostent *server;
-    struct header *h;
+    struct header *h = 0;
     FILE *fp;
     size_t hsize = sizeof (struct header);
     
     char buffer[PSIZE + hsize];
     
-    portno = atoi(argv[2]);
-    if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-        perror ("Error creating socket");
-        return 0;
-    }
+    // Create socket
+    if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
+        error ("Error creating socket");
     
+    // Populate server information
     server = gethostbyname (argv[1]);
     if (server == NULL) {
         perror ("No such host");
         return 0;
     }
-    
     memset ((char *)&serv_addr, 0, sizeof (serv_addr));
     serv_addr.sin_family = AF_INET;
     memcpy ((void *)&serv_addr.sin_addr, server->h_addr_list[0], server->h_length);
-    serv_addr.sin_port = htons(portno);
+    serv_addr.sin_port = htons(atoi(argv[2]));
     
-    n = strlen(argv[3]);
-    if (sendto (sockfd, argv[3], n, 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0) {
+    
+    // Initiate file request from sender
+    // TODO: Standardize this request with header (?)
+    if (sendto (sockfd, argv[3], strlen(argv[3]), 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0) {
         perror ("Sendto failed");
         return 0;
     }
     
+    // Open file for writing
     fp = fopen(argv[3], "w");
-    initheader(&h);
     
+    // Receive packets from sender
+    initheader(&h);
     while(!h->fin) {
         n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, NULL, 0);
-        buffer[n] = 0;
         memcpy (h, buffer, hsize);
         n -= hsize;
-        seqno += n;
+        
         printf("Received: %i bytes with seqno %i\n", n, h->seqno);
-        if (n > 0) {
-            fwrite(buffer + hsize, 1, n, fp);
-        } else {
-            printf("Requested file %s did not exist\n", argv[3]);
+        
+        // Received correct seqno
+        if (seqno == h->seqno) {
+            seqno += n;
+            if (n > 0) {
+                fwrite(buffer + hsize, 1, n, fp);
+                
+                // Send ACK
+                h->seqno = seqno;
+                h->ack = 1;
+                if (sendto (sockfd, h, sizeof(struct header), 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0) {
+                    perror ("Sendto failed");
+                    return 0;
+                }
+            } else {
+                printf("Requested file %s did not exist or had no data\n", argv[3]);
+            }
+        } else { // Unexpected seqno
+            printf("Ignoring packet; expected seqno %i\n", seqno);
+            h->fin = 0;
         }
     }
     
-    free(h);
+    free(h); h = 0;
     fclose(fp);
 }
