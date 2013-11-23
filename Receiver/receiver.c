@@ -9,18 +9,29 @@
 #define PSIZE 1000
 
 struct header {
-    int sequence;
+    int seqno;
+    char fin;
+    char ack;
 };
+
+void initheader (struct header **h) {
+    *h = malloc (sizeof (struct header));
+    (*h)->seqno = 0;
+    (*h)->fin = 0;
+    (*h)->ack = 0;
+}
 
 
 // argv: sender hostname, sender portnumber, filename, Pl, PC
 int main (int argc, char *argv[]) {
-    int sockfd, portno, n;
+    int sockfd, portno, n, seqno = 0;
     struct sockaddr_in serv_addr;
     struct hostent *server;
+    struct header *h;
     FILE *fp;
+    size_t hsize = sizeof (struct header);
     
-    char buffer[PSIZE];
+    char buffer[PSIZE + hsize];
     
     portno = atoi(argv[2]);
     if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
@@ -46,13 +57,22 @@ int main (int argc, char *argv[]) {
     }
     
     fp = fopen(argv[3], "w");
+    initheader(&h);
     
-    while(1) {
-        n = recvfrom(sockfd, buffer, PSIZE, 0, NULL, 0);
+    while(!h->fin) {
+        n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, NULL, 0);
         buffer[n] = 0;
-        fwrite(buffer, 1, n, fp);
-        break;
+        memcpy (h, buffer, hsize);
+        n -= hsize;
+        seqno += n;
+        printf("Received: %i bytes with seqno %i\n", n, h->seqno);
+        if (n > 0) {
+            fwrite(buffer + hsize, 1, n, fp);
+        } else {
+            printf("Requested file %s did not exist\n", argv[3]);
+        }
     }
     
+    free(h);
     fclose(fp);
 }
