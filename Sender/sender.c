@@ -5,6 +5,7 @@
 #include <sys/types.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <limits.h>
 
 #define PSIZE 1000
 
@@ -12,13 +13,45 @@ struct header {
     int seqno;
     char fin;
     char ack;
+    short int checksum;
 };
+
+short int calcChecksum(char *buf,int len) {
+    int sum=0;
+    int count=0;
+    short int finalcheck;
+    //Find the sum of all values
+    while (1) {
+        short int temp=*((short int *)buf);
+        short int litEadian=(short int)(temp << 8) | (temp >> (sizeof(temp)*CHAR_BIT - 8));
+        sum=sum+litEadian;
+        *((short int *) buf)++;
+        count=count+2;
+        if (count>=(len-1)) {
+            break;
+        }
+    }
+    //only has one character left to add to sum
+    if ((count+1)==len) {
+        sum=sum+*(buf);
+    }
+    
+    while (sum>>16) {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    //Convert to 1s complement
+    finalcheck=~sum;
+    
+    return finalcheck;
+    
+}
 
 void initheader (struct header **h) {
     *h = malloc (sizeof (struct header));
     (*h)->seqno = 0;
     (*h)->fin = 0;
     (*h)->ack = 0;
+    (*h)->checksum=0;
 }
 
 void error (char *e) {
@@ -43,7 +76,7 @@ int main(int argc, char *argv[]) {
     // Make socket
     if((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
         error ("Error creating socket");
-
+    
     
     // Populate server address info
     memset((char *)&serv_addr, 0, sizeof (serv_addr));
@@ -84,6 +117,7 @@ int main(int argc, char *argv[]) {
             
             // read file chunk into buffer
             f = fread(buffer + hsize, 1, PSIZE, fp);
+            h->checksum=calcChecksum(buffer+hsize,fsize);
             if (f + seqno >= fsize)
                 h->fin = 1;
             // prepend header
