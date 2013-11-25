@@ -19,13 +19,16 @@ struct header {
 short int calcChecksum(char *buf,int len) {
     int sum=0;
     int count=0;
+    char *tmp=buf;
     short int finalcheck;
     //Find the sum of all values
+    short int temp=*((short int *)tmp);
     while (1) {
-        short int temp=*((short int *)buf);
         short int litEadian=(short int)(temp << 8) | (temp >> (sizeof(temp)*CHAR_BIT - 8));
         sum=sum+litEadian;
-        *((short int *) buf)++;
+        tmp++;
+        tmp++;
+        temp=*((short int *) tmp);
         count=count+2;
         if (count>=(len-1)) {
             break;
@@ -33,7 +36,7 @@ short int calcChecksum(char *buf,int len) {
     }
     //only has one character left to add to sum
     if ((count+1)==len) {
-        sum=sum+*(buf);
+        sum=sum+*(tmp);
     }
     
     while (sum>>16) {
