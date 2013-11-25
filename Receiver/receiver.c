@@ -122,8 +122,10 @@ int main (int argc, char *argv[]) {
                 // Send ACK
                 h->seqno = seqno;
                 h->ack = 1;
-                if (sendto (sockfd, h, sizeof(struct header), 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0)
-                    error ("Sendto failed");
+                if (sendto (sockfd, h, sizeof(struct header), 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0) {
+                    perror ("Sendto failed");
+                    return 0;
+                }
             } else {
                 printf("Requested file %s did not exist or had no data\n", argv[3]);
             }
