@@ -82,28 +82,28 @@ int sendpacket(char * buffer,int sockfd,int size,struct sockaddr_in cli_addr,int
  *Stores the packet into the command window
  *
  */
-int rsPacket(struct header *h,int sockfd,struct sockaddr_in cli_addr,int addrlen,int seqno,FILE *fp,long fsize,int numPackets,int cwnd) {
+int rsPacket(struct header *h, int sockfd, struct sockaddr_in cli_addr, int addrlen, int *seqno,FILE *fp,long fsize,int numPackets,int cwnd) {
     
     size_t f;
     size_t hsize = sizeof (struct header);
-    int start=0;
     while (1) {
         char buf[PSIZE + sizeof(struct header)];
-        h->seqno = seqno;
+        h->seqno = *seqno;
         // read file chunk into buffer
         f = fread(buf + hsize, 1, PSIZE, fp);
         //hsize=sizeof (struct header);
         h->checksum=calcChecksum(buf+hsize,f);
-        if (f + seqno >= fsize)
+        if (f + *seqno >= fsize)
             h->fin = 1;
         // prepend header
         memcpy (buf, h, hsize);
         //send packet
-        sendpacket(buf,sockfd,f + hsize,cli_addr,addrlen);
+        sendpacket (buf, sockfd, f + hsize, cli_addr, addrlen);
         
-        start=start+PSIZE;
-        numPackets++;
-        if (start>fsize||(numPackets>=cwnd)) {
+        *seqno += PSIZE;
+        numPackets += PSIZE;
+        
+        if (*seqno > fsize||(numPackets>=cwnd)) {
             return numPackets;
             break;
         }
@@ -169,7 +169,7 @@ int main(int argc, char *argv[]) {
             initheader(&h);
             int numPackets=0;
             //Reads and sends the packet (cuts up packet to smaller pieces if to large)
-            rsPacket(h,sockfd,cli_addr,addrlen,seqno,fp,fsize,numPackets,cwnd);
+            rsPacket(h,sockfd,cli_addr,addrlen,&seqno,fp,fsize,numPackets,cwnd);
             // receive ACK
             n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
             memcpy (h, buffer, hsize);
