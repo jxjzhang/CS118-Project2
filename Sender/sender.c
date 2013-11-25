@@ -62,19 +62,70 @@ void error (char *e) {
     exit(0);
 }
 
+/*Send single packet with all bytes to be send in buffer
+ *buffer: character array which holds bytes to be send
+ *sockfd: socket number
+ *size: number of bytes to be sent
+ *cli_addr: sockaddr_in of client to send packet to
+ *addrlen: length of address
+ */
+int sendpacket(char * buffer,int sockfd,int size,struct sockaddr_in cli_addr,int addrlen) {
+    
+    if (sendto(sockfd, buffer, size, 0, (struct sockaddr *)&cli_addr, addrlen) < 0) {
+        error("Sendto failed");
+        return 0;
+    }
+    return 1;
+}
+
+/*Reads input from a file and sends the packet
+ *Stores the packet into the command window
+ *
+ */
+int rsPacket(struct header *h,int sockfd,struct sockaddr_in cli_addr,int addrlen,int seqno,FILE *fp,long fsize,int numPackets,int cwnd) {
+    
+    size_t f;
+    size_t hsize = sizeof (struct header);
+    int start=0;
+    while (1) {
+        char buf[PSIZE + sizeof(struct header)];
+        h->seqno = seqno;
+        // read file chunk into buffer
+        f = fread(buf + hsize, 1, PSIZE, fp);
+        //hsize=sizeof (struct header);
+        h->checksum=calcChecksum(buf+hsize,f);
+        if (f + seqno >= fsize)
+            h->fin = 1;
+        // prepend header
+        memcpy (buf, h, hsize);
+        //send packet
+        sendpacket(buf,sockfd,f + hsize,cli_addr,addrlen);
+        
+        start=start+PSIZE;
+        numPackets++;
+        if (start>fsize||(numPackets>=cwnd)) {
+            return numPackets;
+            break;
+        }
+    }
+    return numPackets;
+}
+
 // argv: portnumber, Cwnd, Pl, PC
 int main(int argc, char *argv[]) {
     int sockfd, n, cwnd, seqno = 0;
     cwnd = atoi (argv[2]);
     size_t f;
     long fsize;
-    struct header *h;
-    size_t hsize = sizeof (struct header);
     struct sockaddr_in serv_addr, cli_addr;
     socklen_t addrlen;
     FILE *fp;
-    
+    struct header *h;
+    size_t hsize = sizeof (struct header);
     char buffer[PSIZE + sizeof(struct header)];
+    
+    //Make command window (keeps track of packets)
+    char *window[cwnd];
     
     // Make socket
     if((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
@@ -116,19 +167,9 @@ int main(int argc, char *argv[]) {
         
         do {
             initheader(&h);
-            h->seqno = seqno;
-            
-            // read file chunk into buffer
-            f = fread(buffer + hsize, 1, PSIZE, fp);
-            h->checksum=calcChecksum(buffer+hsize,fsize);
-            if (f + seqno >= fsize)
-                h->fin = 1;
-            // prepend header
-            memcpy (buffer, h, hsize);
-            
-            if (sendto(sockfd, buffer, f + hsize, 0, (struct sockaddr *)&cli_addr, addrlen) < 0)
-                error("Sendto failed");
-            
+            int numPackets=0;
+            //Reads and sends the packet (cuts up packet to smaller pieces if to large)
+            rsPacket(h,sockfd,cli_addr,addrlen,seqno,fp,fsize,numPackets,cwnd);
             // receive ACK
             n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
             memcpy (h, buffer, hsize);
