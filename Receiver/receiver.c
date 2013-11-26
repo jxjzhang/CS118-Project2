@@ -21,6 +21,11 @@ struct header {
     short int checksum;
 };
 
+void error (char *e) {
+    perror (e);
+    exit(0);
+}
+
 short int calcChecksum(char *buf,int len) {
     int sum=0;
     int count=0;
@@ -54,18 +59,15 @@ short int calcChecksum(char *buf,int len) {
     
 }
 
-void initheader (struct header **h) {
-    *h = malloc (sizeof (struct header));
+void initheader(struct header **h) {
+    *h = malloc(sizeof(struct header));
+    if(*h == NULL)
+        error("Malloc failure in initheader\n");
     (*h)->seqno = 0;
     (*h)->fin = 0;
     (*h)->ack = 0;
     (*h)->checksum = 0;
     (*h)->length = 0;
-}
-
-void error (char *e) {
-    perror (e);
-    exit(0);
 }
 
 

@@ -26,6 +26,11 @@ struct packet {
     struct packet *next;
 };
 
+void error (char *e) {
+    perror (e);
+    exit(0);
+}
+
 short int calcChecksum(char *buf,int len) {
     int sum=0;
     int count=0;
@@ -59,8 +64,10 @@ short int calcChecksum(char *buf,int len) {
     
 }
 
-void initheader (struct header **h) {
-    *h = malloc (sizeof (struct header));
+void initheader(struct header **h) {
+    *h = malloc(sizeof(struct header));
+    if(*h == NULL)
+        error("Malloc failure in initheader\n");
     (*h)->seqno = 0;
     (*h)->fin = 0;
     (*h)->ack = 0;
@@ -68,10 +75,14 @@ void initheader (struct header **h) {
     (*h)->length = 0;
 }
 
-struct packet *initpacket (int bufsize) {
-    struct packet *p = malloc (sizeof (struct packet));
+struct packet *initpacket(int bufsize) {
+    struct packet *p = malloc(sizeof(struct packet));
+    if(p == NULL)
+        error("Malloc failure in initpacket: packet\n");
     initheader(&(p->h));
-    p->buffer = malloc (sizeof (char) * bufsize);
+    p->buffer = malloc(sizeof(char) * bufsize);
+    if(p->buffer == NULL)
+        error("Malloc failure in initpacket: buffer\n");
     p->ack = 0;
     p->next = 0;
     return p;
@@ -84,11 +95,6 @@ struct packet *freepacket (struct packet **p) {
     free(*p);
     *p = 0;
     return next;
-}
-
-void error (char *e) {
-    perror (e);
-    exit(0);
 }
 
 /*Send set of packets beginning at p
@@ -214,7 +220,7 @@ int main(int argc, char *argv[]) {
             
             // Populate h with the ACK
             initheader(&h);
-            memcpy (h, buffer, hsize);
+            memcpy(h, buffer, hsize);
             printf("Received ACK with seqno %i\n", h->seqno);
             
             // Parse and process the seqno of the ACK
@@ -236,7 +242,7 @@ int main(int argc, char *argv[]) {
             
             
             free(h); h = 0;
-        } while (ackedseqno < fsize);
+        } while(ackedseqno < fsize);
     }
     
     fclose(fp);
