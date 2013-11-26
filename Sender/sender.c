@@ -123,14 +123,32 @@ void sendpackets(struct packet *p, int sockfd, struct sockaddr_in cli_addr, int 
     }
 }
 
+/*
+ *Returns 0 if should send packet, returns 1 if should not
+ */
+int decideReceive(float ploss) {
+    
+    float num;
+    num=(rand() % 100 + 1);
+    
+    float t=num/100;
+    if (t>ploss) {
+        return 0;
+    }
+    return 1;
+}
+
 // argv: portnumber, Cwnd, Pl, PC
 int main(int argc, char *argv[]) {
     // Socket var
     int sockfd, n, cwnd, maxfdp;
+    float ploss,pcorrupt;
     cwnd = atoi(argv[2]);
     struct sockaddr_in serv_addr, cli_addr;
     socklen_t addrlen;
     fd_set rset;
+    ploss=atof(argv[3]);
+    pcorrupt=atof(argv[4]);
     
     // Timeout setup
     struct timeval timeout;
@@ -143,7 +161,10 @@ int main(int argc, char *argv[]) {
     FILE *fp;
     size_t f;
     long fsize;
-
+    
+    //Set up random value
+    srand(time(NULL));
+    
     // Packet related var
     struct header *h;
     size_t hsize = sizeof (struct header);
@@ -233,36 +254,45 @@ int main(int argc, char *argv[]) {
                 error("select failed");
             if (n == 0) {
                 printf("Timer expired! TODO: Resend appropriate packets\n");
+                // Send out packets
+                cwndleft=cwnd;
+                sendpackets(pfirst, sockfd, cli_addr, addrlen, &cwndleft);
             } /* timer expires */
             
             if(DEBUG) printf("Return value from select: %i\n", n);
             
             if(FD_ISSET(sockfd, &rset)) { /* socket is readable */
                 if(DEBUG) printf("sockfd is readable\n");
-                n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
-                if (DEBUG) printf("Return value from recvfrom: %i\n", n);
+                if (decideReceive(ploss)||decideReceive(pcorrupt)) {
+                    printf("Triggering ACK ignore because of either loss or corruption\n");
+                    n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
+                    //Recieve ACK, but do nothing with it
+                }else {
+                    n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
+                    if (DEBUG) printf("Return value from recvfrom: %i\n", n);
                 
-                // Populate h with the ACK
-                initheader(&h);
-                memcpy(h, buffer, hsize);
-                printf("Received ACK\tseqno %i\n", h->seqno);
+                    // Populate h with the ACK
+                    initheader(&h);
+                    memcpy(h, buffer, hsize);
+                    printf("Received ACK\tseqno %i\n", h->seqno);
                 
-                // Parse and process the seqno of the ACK
-                // Optional TODO: (sel repeat): currently assumes cumulative ACK
-                while (pfirst->h->seqno < h->seqno) {
-                    printf("Freeing packet with length %zu and seqno %i\n", pfirst->length, pfirst->h->seqno);
-                    cwndleft += pfirst->length;
-                    pfirst = freepacket(&pfirst);
-                    if (!pfirst)
-                        break;
+                    // Parse and process the seqno of the ACK
+                    // Optional TODO: (sel repeat): currently assumes cumulative ACK
+                    while (pfirst->h->seqno < h->seqno) {
+                        printf("Freeing packet with length %zu and seqno %i\n", pfirst->length, pfirst->h->seqno);
+                        cwndleft += pfirst->length;
+                        pfirst = freepacket(&pfirst);
+                        if (!pfirst)
+                            break;
+                    }
+                    if (pfirst && pfirst->h->seqno == h->seqno) {
+                        pfirst->ack++;
+                    }
+                    ackedseqno = (h->seqno > ackedseqno ? h->seqno : ackedseqno);
+                
+                    // Optional TODO (sel repeat): if any packet has received 3rd dupe ACK, then rtxmit
+                    free(h); h = 0;
                 }
-                if (pfirst && pfirst->h->seqno == h->seqno) {
-                    pfirst->ack++;
-                }
-                ackedseqno = (h->seqno > ackedseqno ? h->seqno : ackedseqno);
-                
-                // Optional TODO (sel repeat): if any packet has received 3rd dupe ACK, then rtxmit
-                free(h); h = 0;
             }
         } while(ackedseqno < fsize);
     }
