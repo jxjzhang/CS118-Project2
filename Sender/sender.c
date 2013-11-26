@@ -8,18 +8,21 @@
 #include <limits.h>
 
 #define PSIZE 1000
+#define DEBUG 1
 
 struct header {
     int seqno;
     char fin;
     char ack;
+    size_t length;
     short int checksum;
 };
 
 struct packet {
     struct header *h;
     char *buffer;
-    clock_t time;
+    short int ack;
+    /* TODO: Add a time component for when this packet will timeout */
     struct packet *next;
 };
 
@@ -61,20 +64,26 @@ void initheader (struct header **h) {
     (*h)->seqno = 0;
     (*h)->fin = 0;
     (*h)->ack = 0;
-    (*h)->checksum=0;
+    (*h)->checksum = 0;
+    (*h)->length = 0;
 }
 
-void initpacket (struct packet **p, int bufsize) {
-    *p = malloc (sizeof (struct packet));
-    initheader(&(*p)->h);
-    (*p)->buffer = malloc (sizeof (char) * bufsize);
-    (*p)->next = 0;
+struct packet *initpacket (int bufsize) {
+    struct packet *p = malloc (sizeof (struct packet));
+    initheader(&(p->h));
+    p->buffer = malloc (sizeof (char) * bufsize);
+    p->ack = 0;
+    p->next = 0;
+    return p;
 }
 
-void freepacket (struct packet **p) {
+struct packet *freepacket (struct packet **p) {
+    struct packet *next = (*p)->next;
     free((*p)->h);
     free((*p)->buffer);
     free(*p);
+    *p = 0;
+    return next;
 }
 
 void error (char *e) {
@@ -82,34 +91,49 @@ void error (char *e) {
     exit(0);
 }
 
-/*Send single packet with all bytes to be send in buffer
- *buffer: character array which holds bytes to be send
+/*Send set of packets beginning at p
  *sockfd: socket number
- *size: number of bytes to be sent
  *cli_addr: sockaddr_in of client to send packet to
  *addrlen: length of address
  */
-int sendpacket(char * buffer,int sockfd,int size,struct sockaddr_in cli_addr,int addrlen) {
-    
-    if (sendto(sockfd, buffer, size, 0, (struct sockaddr *)&cli_addr, addrlen) < 0) {
-        error("Sendto failed");
-        return 0;
+void sendpackets(struct packet *p, int sockfd, struct sockaddr_in cli_addr, int addrlen, int *cwndleft) {
+    while (p && *cwndleft >= p->h->length) {
+        size_t length = p->h->length + sizeof(struct header);
+        char buffer[length];
+        
+        // Fill out the buffer
+        memset(buffer, '\0', length);
+        memcpy(buffer, p->h, sizeof(struct header));
+        memcpy(buffer + sizeof(struct header), p->buffer, p->h->length);
+        
+        // Send packet
+        if (sendto(sockfd, buffer, length, 0, (struct sockaddr *)&cli_addr, addrlen) < 0)
+            error("Sendto failed");
+        printf("Sent %zu bytes\tseqno %i\tfin %i\n", p->h->length, p->h->seqno, p->h->fin);
+        *cwndleft -= p->h->length;
+        p = p->next;
     }
-    return 1;
 }
 
 // argv: portnumber, Cwnd, Pl, PC
 int main(int argc, char *argv[]) {
-    int sockfd, n, cwnd, sentseqno = 0, ackedseqno = 0;
+    // Socket var
+    int sockfd, n, cwnd;
     cwnd = atoi (argv[2]);
-    size_t f;
-    long fsize;
     struct sockaddr_in serv_addr, cli_addr;
     socklen_t addrlen;
+    
+    // File var
     FILE *fp;
+    size_t f;
+    long fsize;
+
+    // Packet related var
     struct header *h;
     size_t hsize = sizeof (struct header);
-    char buffer[PSIZE + sizeof(struct header)];
+    char buffer[PSIZE + hsize]; // scratch buffer sized for packet payload + header size
+    struct packet *pfirst = 0, *plast = 0;
+    int ackedseqno = 0, sentseqno = 0;
     
     // Make socket
     if((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
@@ -123,11 +147,12 @@ int main(int argc, char *argv[]) {
     serv_addr.sin_port = htons(atoi (argv[1]));
     
     // Bind socket
-    if (bind (sockfd, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0)
+    if(bind(sockfd, (struct sockaddr *)&serv_addr,sizeof(serv_addr)) < 0)
         error("Error on bind");
     
     // Obtain file request
     // TODO: Standardize request to use header(?)
+    // TODO: Use select(?)
     addrlen = sizeof(cli_addr);
     n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
     buffer[n] = 0;
@@ -140,54 +165,77 @@ int main(int argc, char *argv[]) {
         h->fin = 1;
         memcpy (buffer, h, hsize);
         buffer[hsize] = 0;
-        if (sendto(sockfd, buffer, f + hsize, 0, (struct sockaddr *)&cli_addr, addrlen) < 0)
+        if(sendto(sockfd, buffer, f + hsize, 0, (struct sockaddr *)&cli_addr, addrlen) < 0)
             error("Sendto failed");
-        free(h);
+        free(h); h = 0;
     } else {
-        // get file size
-        fseek (fp, 0, SEEK_END);
-        fsize = ftell (fp);
-        rewind (fp);
+        // Get file size
+        fseek(fp, 0, SEEK_END);
+        fsize = ftell(fp);
+        rewind(fp);
+        printf("Filesize of %s: %lu\n", buffer, fsize);
         
         int cwndleft = cwnd;
+        size_t f;
+        
         do {
-            initheader(&h);
-            size_t f;
-            size_t hsize = sizeof (struct header);
-
+            if (DEBUG) printf("cwndleft:\t%i\n", cwndleft);
+            if (DEBUG) printf("sentseqno:\t%i\n", sentseqno);
+            
             while (cwndleft > 0 && sentseqno < fsize) {
-                h->seqno = sentseqno;
-                // read file chunk into buffer
+                // Populate pfirst thru plast for available bytes in cwnd
+                f = PSIZE < cwndleft ? PSIZE : cwndleft;
+                f = fread(buffer, 1, f, fp);
+                if (DEBUG) printf("Read %lu bytes from file\n", f);
                 
-                f = fread(buffer + hsize, 1, (PSIZE < cwndleft ? PSIZE : cwndleft), fp);
-                h->checksum = calcChecksum(buffer + hsize,f);
+                struct packet *newp = initpacket(f);
+                memcpy(newp->buffer, buffer, f); // Store file contents in packet buffer
+                newp->h->checksum = calcChecksum(newp->buffer,f);
+                newp->h->length = f;
+                newp->h->seqno = sentseqno;
+                if (f + sentseqno >= fsize)
+                    newp->h->fin = 1;
+                if (DEBUG) printf("New packet instantiated with seqno %i\n", newp->h->seqno);
                 
+                // Keep track of the linked list pointers
+                if (!pfirst)
+                    pfirst = newp;
+                if (plast)
+                    plast->next = newp;
+                plast = newp;
+                
+                // Send out packets
+                sendpackets(newp, sockfd, cli_addr, addrlen, &cwndleft);
                 sentseqno += f;
-                if (sentseqno >= fsize)
-                    h->fin = 1;
-                // prepend header
-                memcpy (buffer, h, hsize);
-                
-                //send packet
-                if (sendto(sockfd, buffer, f + hsize, 0, (struct sockaddr *)&cli_addr, addrlen) < 0)
-                    error("Sendto failed");
-                cwndleft -= f;
-                printf("Sent %lu bytes with seqno %i, checksum %i, fin %i; cwnd remaining: %i\n", f, h->seqno, h->checksum, (int)h->fin, cwndleft);
-            }
-
-            // receive ACK
-            n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
-            memcpy (h, buffer, hsize);
-            printf("Received ACK with seqno %i\n", h->seqno);
-            if (h->seqno > ackedseqno) {
-                cwndleft += h->seqno - ackedseqno;
-                ackedseqno = h->seqno;
-                if (sentseqno != ftell (fp))
-                    fseek (fp, sentseqno, SEEK_SET);
-                printf("New cwnd between %i and %i; remaining cwnd %i\n", ackedseqno, ackedseqno + cwnd, cwndleft);
             }
             
-            free(h);
+            // TODO: Use select() to wait for the ACK from the receiver
+            n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
+            
+            // Populate h with the ACK
+            initheader(&h);
+            memcpy (h, buffer, hsize);
+            printf("Received ACK with seqno %i\n", h->seqno);
+            
+            // Parse and process the seqno of the ACK
+            while (pfirst->h->seqno < h->seqno) {
+                printf("Freeing packet with length %zu and seqno %i\n", pfirst->h->length, pfirst->h->seqno);
+                cwndleft += pfirst->h->length;
+                pfirst = freepacket(&pfirst);
+                if (!pfirst)
+                    break;
+            }
+            if (pfirst && pfirst->h->seqno == h->seqno) {
+                pfirst->ack++;
+                if (pfirst->ack > 1)
+                    cwndleft += h->length;
+            }
+            ackedseqno = (h->seqno > ackedseqno ? h->seqno : ackedseqno);
+            
+            // TODO: if pfirst has received a duplicate ACK, then resend starting from that point
+            
+            
+            free(h); h = 0;
         } while (ackedseqno < fsize);
     }
     

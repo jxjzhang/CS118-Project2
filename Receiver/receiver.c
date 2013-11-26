@@ -17,6 +17,7 @@ struct header {
     int seqno;
     char fin;
     char ack;
+    size_t length;
     short int checksum;
 };
 
@@ -58,7 +59,8 @@ void initheader (struct header **h) {
     (*h)->seqno = 0;
     (*h)->fin = 0;
     (*h)->ack = 0;
-    (*h)->checksum=0;
+    (*h)->checksum = 0;
+    (*h)->length = 0;
 }
 
 void error (char *e) {
@@ -103,13 +105,14 @@ int main (int argc, char *argv[]) {
     // Receive packets from sender
     initheader(&h);
     while(!h->fin) {
+        // TODO: Use select and submit a cumulative ACK
         n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, NULL, 0);
         memcpy (h, buffer, hsize);
-        n -= hsize;
+        n = h->length;
         
         printf("Received: %i bytes with seqno %i, checksum %i\n", n, h->seqno, (short int)(h->checksum));
         
-        // Received correct seqno
+        // Received next seqno
         if (seqno == h->seqno) {
             seqno += n;
             if (n > 0) {
@@ -126,7 +129,8 @@ int main (int argc, char *argv[]) {
                     error ("Sendto failed");
             } else
                 printf("Requested file %s did not exist or had no data\n", argv[3]);
-        } else { // Unexpected seqno
+        } else {
+            // TODO: Send out an ACK requesting the expected seqno
             printf("Ignoring packet; expected seqno %i\n", seqno);
             h->fin = 0;
         }
