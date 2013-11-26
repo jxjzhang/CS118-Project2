@@ -11,7 +11,7 @@
 #define PSIZE 1000 // Packet size in bytes
 
 #define ACKDELAYS 0 // Delay of sending ACK in seconds
-#define ACKDELAYNS 500000000 // Delay of sending ACK in nanoseconds
+#define ACKDELAYNS 100000000 // Delay of sending ACK in nanoseconds
 
 struct header {
     int seqno;
@@ -68,20 +68,35 @@ void initheader(struct header **h) {
     (*h)->checksum = 0;
 }
 
+/*
+ *Returns 0 if should send packet, returns 1 if should not
+ */
+int decideReceive(float ploss) {
+    
+    float num;
+    num=(rand() % 100 + 1);
+    
+    float t=num/100;
+    if (t>ploss) {
+        return 0;
+    }
+    return 1;
+}
 
 // argv: sender hostname, sender portnumber, filename, Pl, PC
 int main (int argc, char *argv[]) {
     int sockfd, n, seqno = 0, r;
+    float ploss, pcorrupt;
     struct sockaddr_in serv_addr;
     struct hostent *server;
     struct header *h = 0;
     FILE *fp;
     size_t hsize = sizeof (struct header);
     
-    // Loss/corruption setup
-    float pl = atof(argv[4]);
-    float pc = atof(argv[5 ]);
+    // Randomness setup
     srand(time(NULL));
+    ploss=atof(argv[3]);
+    pcorrupt=atof(argv[4]);
     
     char buffer[PSIZE + hsize];
     
@@ -111,46 +126,42 @@ int main (int argc, char *argv[]) {
     initheader(&h);
     while(!h->fin) {
         // TODO: Use select and submit a cumulative ACK
-        n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, NULL, 0);
-        memcpy (h, buffer, hsize);
-        n -= hsize;
         
-        printf("Received: %i bytes with seqno %i, checksum %i\n", n, h->seqno, (short int)(h->checksum));
+        //Introduce corruption on recieving data
+        if (decideReceive(ploss)||decideReceive(pcorrupt)) {
+            printf("Triggering data ignore because of either loss or corruption\n");
+            n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, NULL, 0);
+            //Recieve data packet but do nothing with it
+        }else {
+            n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, NULL, 0);
+            memcpy (h, buffer, hsize);
+            n -= hsize;
         
-        // Received next seqno
-        if (seqno == h->seqno) {
-            seqno += n;
-            if (n > 0) {
-                fwrite(buffer + hsize, 1, n, fp);
+            printf("Received: %i bytes with seqno %i, checksum %i\n", n, h->seqno, (short int)(h->checksum));
+        
+            // Received next seqno
+            if (seqno == h->seqno) {
+                seqno += n;
+                if (n > 0) {
+                    fwrite(buffer + hsize, 1, n, fp);
                 
-                //Calculate Checksum
-                printf("Calculated Checksum: %i\n",(short int)calcChecksum(buffer + hsize,n));
+                    //Calculate Checksum
+                    printf("Calculated Checksum: %i\n",(short int)calcChecksum(buffer + hsize,n));
                 
-                // Send ACK
-                h->seqno = seqno;
-                h->ack = 1;
-                nanosleep((struct timespec[]){{ACKDELAYS, ACKDELAYNS}}, NULL);
-                
-                // Corruption/Loss logic
-                r = rand();
-                if ((float)r/RAND_MAX < pl) {
-                    printf("Triggering data loss on ACK with seqno %i\n", seqno);
-                } else {
-                    r = rand();
-                    if ((float)r/RAND_MAX < pc) {
-                        printf("Triggering corruption on ACK with seqno %i\n", seqno);
-                        h->checksum = 0;
-                    }
+                    // Send ACK
+                    h->seqno = seqno;
+                    h->ack = 1;
+                    nanosleep((struct timespec[]){{ACKDELAYS, ACKDELAYNS}}, NULL);
                     if (sendto (sockfd, h, sizeof(struct header), 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0)
                         error ("Sendto failed");
-                    printf("Sent ACK with seqno %i\n", seqno);
-                }
-            } else
-                printf("Requested file %s did not exist or had no data\n", argv[3]);
-        } else {
-            // TODO: Send out an ACK requesting the expected seqno
-            printf("Ignoring packet; expected seqno %i\n", seqno);
-            h->fin = 0;
+                    printf("Sending ACK with seqno %i\n", seqno);
+                } else
+                    printf("Requested file %s did not exist or had no data\n", argv[3]);
+            } else {
+                // TODO: Send out an ACK requesting the expected seqno
+                printf("Ignoring packet; expected seqno %i\n", seqno);
+                h->fin = 0;
+            }
         }
     }
     
