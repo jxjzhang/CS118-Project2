@@ -6,6 +6,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <limits.h>
+#include <sys/time.h>
 
 #define PSIZE 1000
 #define DEBUG 1
@@ -14,14 +15,14 @@ struct header {
     int seqno;
     char fin;
     char ack;
-    size_t length;
     short int checksum;
 };
 
 struct packet {
     struct header *h;
     char *buffer;
-    short int ack;
+    short int ack; // Not used for Go-Back-N
+    size_t length;
     /* TODO: Add a time component for when this packet will timeout */
     struct packet *next;
 };
@@ -72,7 +73,6 @@ void initheader(struct header **h) {
     (*h)->fin = 0;
     (*h)->ack = 0;
     (*h)->checksum = 0;
-    (*h)->length = 0;
 }
 
 struct packet *initpacket(int bufsize) {
@@ -103,20 +103,20 @@ struct packet *freepacket (struct packet **p) {
  *addrlen: length of address
  */
 void sendpackets(struct packet *p, int sockfd, struct sockaddr_in cli_addr, int addrlen, int *cwndleft) {
-    while (p && *cwndleft >= p->h->length) {
-        size_t length = p->h->length + sizeof(struct header);
+    while (p && *cwndleft >= p->length) {
+        size_t length = p->length + sizeof(struct header);
         char buffer[length];
         
         // Fill out the buffer
         memset(buffer, '\0', length);
         memcpy(buffer, p->h, sizeof(struct header));
-        memcpy(buffer + sizeof(struct header), p->buffer, p->h->length);
+        memcpy(buffer + sizeof(struct header), p->buffer, p->length);
         
         // Send packet
         if (sendto(sockfd, buffer, length, 0, (struct sockaddr *)&cli_addr, addrlen) < 0)
             error("Sendto failed");
-        printf("Sent %zu bytes\tseqno %i\tfin %i\n", p->h->length, p->h->seqno, p->h->fin);
-        *cwndleft -= p->h->length;
+        printf("Sent %zu bytes\tseqno %i\tfin %i\n", p->length, p->h->seqno, p->h->fin);
+        *cwndleft -= p->length;
         p = p->next;
     }
 }
@@ -197,7 +197,7 @@ int main(int argc, char *argv[]) {
                 struct packet *newp = initpacket(f);
                 memcpy(newp->buffer, buffer, f); // Store file contents in packet buffer
                 newp->h->checksum = calcChecksum(newp->buffer,f);
-                newp->h->length = f;
+                newp->length = f;
                 newp->h->seqno = sentseqno;
                 if (f + sentseqno >= fsize)
                     newp->h->fin = 1;
@@ -216,29 +216,29 @@ int main(int argc, char *argv[]) {
             }
             
             // TODO: Use select() to wait for the ACK from the receiver
+            // Set select() timeout = pfirst's timeout. Resend if times out
             n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
             
             // Populate h with the ACK
             initheader(&h);
             memcpy(h, buffer, hsize);
-            printf("Received ACK with seqno %i\n", h->seqno);
+            printf("Received ACK\tseqno %i\n", h->seqno);
             
             // Parse and process the seqno of the ACK
+            // Optional TODO: (sel repeat): currently assumes cumulative ACK
             while (pfirst->h->seqno < h->seqno) {
-                printf("Freeing packet with length %zu and seqno %i\n", pfirst->h->length, pfirst->h->seqno);
-                cwndleft += pfirst->h->length;
+                printf("Freeing packet with length %zu and seqno %i\n", pfirst->length, pfirst->h->seqno);
+                cwndleft += pfirst->length;
                 pfirst = freepacket(&pfirst);
                 if (!pfirst)
                     break;
             }
             if (pfirst && pfirst->h->seqno == h->seqno) {
                 pfirst->ack++;
-                if (pfirst->ack > 1)
-                    cwndleft += h->length;
             }
             ackedseqno = (h->seqno > ackedseqno ? h->seqno : ackedseqno);
             
-            // TODO: if pfirst has received a duplicate ACK, then resend starting from that point
+            // Optional TODO (sel repeat): if any packet has received 3rd dupe ACK, then rtxmit
             
             
             free(h); h = 0;

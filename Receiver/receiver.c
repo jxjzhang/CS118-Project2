@@ -17,7 +17,6 @@ struct header {
     int seqno;
     char fin;
     char ack;
-    size_t length;
     short int checksum;
 };
 
@@ -67,7 +66,6 @@ void initheader(struct header **h) {
     (*h)->fin = 0;
     (*h)->ack = 0;
     (*h)->checksum = 0;
-    (*h)->length = 0;
 }
 
 
@@ -110,7 +108,7 @@ int main (int argc, char *argv[]) {
         // TODO: Use select and submit a cumulative ACK
         n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, NULL, 0);
         memcpy (h, buffer, hsize);
-        n = h->length;
+        n -= hsize;
         
         printf("Received: %i bytes with seqno %i, checksum %i\n", n, h->seqno, (short int)(h->checksum));
         
