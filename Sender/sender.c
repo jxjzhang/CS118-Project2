@@ -16,6 +16,13 @@ struct header {
     short int checksum;
 };
 
+struct packet {
+    struct header *h;
+    char *buffer;
+    clock_t time;
+    struct packet *next;
+};
+
 short int calcChecksum(char *buf,int len) {
     int sum=0;
     int count=0;
@@ -57,6 +64,19 @@ void initheader (struct header **h) {
     (*h)->checksum=0;
 }
 
+void initpacket (struct packet **p, int bufsize) {
+    *p = malloc (sizeof (struct packet));
+    initheader(&(*p)->h);
+    (*p)->buffer = malloc (sizeof (char) * bufsize);
+    (*p)->next = 0;
+}
+
+void freepacket (struct packet **p) {
+    free((*p)->h);
+    free((*p)->buffer);
+    free(*p);
+}
+
 void error (char *e) {
     perror (e);
     exit(0);
@@ -78,42 +98,9 @@ int sendpacket(char * buffer,int sockfd,int size,struct sockaddr_in cli_addr,int
     return 1;
 }
 
-/*Reads input from a file and sends the packet
- *Stores the packet into the command window
- *
- */
-int rsPacket(struct header *h, int sockfd, struct sockaddr_in cli_addr, int addrlen, int *seqno,FILE *fp,long fsize,int numPackets,int cwnd) {
-    
-    size_t f;
-    size_t hsize = sizeof (struct header);
-    while (1) {
-        char buf[PSIZE + sizeof(struct header)];
-        h->seqno = *seqno;
-        // read file chunk into buffer
-        f = fread(buf + hsize, 1, PSIZE, fp);
-        //hsize=sizeof (struct header);
-        h->checksum=calcChecksum(buf+hsize,f);
-        if (f + *seqno >= fsize)
-            h->fin = 1;
-        // prepend header
-        memcpy (buf, h, hsize);
-        //send packet
-        sendpacket (buf, sockfd, f + hsize, cli_addr, addrlen);
-        
-        *seqno += PSIZE;
-        numPackets += PSIZE;
-        
-        if (*seqno > fsize||(numPackets>=cwnd)) {
-            return numPackets;
-            break;
-        }
-    }
-    return numPackets;
-}
-
 // argv: portnumber, Cwnd, Pl, PC
 int main(int argc, char *argv[]) {
-    int sockfd, n, cwnd, seqno = 0;
+    int sockfd, n, cwnd, sentseqno = 0, ackedseqno = 0;
     cwnd = atoi (argv[2]);
     size_t f;
     long fsize;
@@ -123,9 +110,6 @@ int main(int argc, char *argv[]) {
     struct header *h;
     size_t hsize = sizeof (struct header);
     char buffer[PSIZE + sizeof(struct header)];
-    
-    //Make command window (keeps track of packets)
-    char *window[cwnd];
     
     // Make socket
     if((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
@@ -165,22 +149,46 @@ int main(int argc, char *argv[]) {
         fsize = ftell (fp);
         rewind (fp);
         
+        int cwndleft = cwnd;
         do {
             initheader(&h);
-            int numPackets=0;
-            //Reads and sends the packet (cuts up packet to smaller pieces if to large)
-            rsPacket(h,sockfd,cli_addr,addrlen,&seqno,fp,fsize,numPackets,cwnd);
+            size_t f;
+            size_t hsize = sizeof (struct header);
+
+            while (cwndleft > 0 && sentseqno < fsize) {
+                h->seqno = sentseqno;
+                // read file chunk into buffer
+                
+                f = fread(buffer + hsize, 1, (PSIZE < cwndleft ? PSIZE : cwndleft), fp);
+                h->checksum = calcChecksum(buffer + hsize,f);
+                
+                sentseqno += f;
+                if (sentseqno >= fsize)
+                    h->fin = 1;
+                // prepend header
+                memcpy (buffer, h, hsize);
+                
+                //send packet
+                if (sendto(sockfd, buffer, f + hsize, 0, (struct sockaddr *)&cli_addr, addrlen) < 0)
+                    error("Sendto failed");
+                cwndleft -= f;
+                printf("Sent %lu bytes with seqno %i, checksum %i, fin %i; cwnd remaining: %i\n", f, h->seqno, h->checksum, (int)h->fin, cwndleft);
+            }
+
             // receive ACK
             n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
             memcpy (h, buffer, hsize);
-            if (h->seqno > seqno) {
-                seqno = h->seqno;
-                if (seqno != ftell (fp))
-                    fseek (fp, seqno, SEEK_SET);
+            printf("Received ACK with seqno %i\n", h->seqno);
+            if (h->seqno > ackedseqno) {
+                cwndleft += h->seqno - ackedseqno;
+                ackedseqno = h->seqno;
+                if (sentseqno != ftell (fp))
+                    fseek (fp, sentseqno, SEEK_SET);
+                printf("New cwnd between %i and %i; remaining cwnd %i\n", ackedseqno, ackedseqno + cwnd, cwndleft);
             }
             
             free(h);
-        } while (seqno < fsize);
+        } while (ackedseqno < fsize);
     }
     
     fclose(fp);

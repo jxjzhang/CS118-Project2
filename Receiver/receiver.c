@@ -6,8 +6,12 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <limits.h>
+#include <time.h>
 
-#define PSIZE 1000
+#define PSIZE 1000 // Packet size in bytes
+
+#define ACKDELAYS 0 // Delay of sending ACK in seconds
+#define ACKDELAYNS 500000000 // Delay of sending ACK in nanoseconds
 
 struct header {
     int seqno;
@@ -80,10 +84,8 @@ int main (int argc, char *argv[]) {
     
     // Populate server information
     server = gethostbyname (argv[1]);
-    if (server == NULL) {
-        perror ("No such host");
-        return 0;
-    }
+    if (server == NULL)
+        error ("No such host");
     memset ((char *)&serv_addr, 0, sizeof (serv_addr));
     serv_addr.sin_family = AF_INET;
     memcpy ((void *)&serv_addr.sin_addr, server->h_addr_list[0], server->h_length);
@@ -92,10 +94,8 @@ int main (int argc, char *argv[]) {
     
     // Initiate file request from sender
     // TODO: Standardize this request with header (?)
-    if (sendto (sockfd, argv[3], strlen(argv[3]), 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0) {
-        perror ("Sendto failed");
-        return 0;
-    }
+    if (sendto (sockfd, argv[3], strlen(argv[3]), 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0)
+        error ("Sendto failed");
     
     // Open file for writing
     fp = fopen(argv[3], "w");
@@ -107,8 +107,7 @@ int main (int argc, char *argv[]) {
         memcpy (h, buffer, hsize);
         n -= hsize;
         
-        printf("Received: %i bytes with seqno %i\n", n, h->seqno);
-        printf("Received: %i bytes with checksum %i\n", n, (short int)(h->checksum));
+        printf("Received: %i bytes with seqno %i, checksum %i\n", n, h->seqno, (short int)(h->checksum));
         
         // Received correct seqno
         if (seqno == h->seqno) {
@@ -122,13 +121,11 @@ int main (int argc, char *argv[]) {
                 // Send ACK
                 h->seqno = seqno;
                 h->ack = 1;
-                if (sendto (sockfd, h, sizeof(struct header), 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0) {
-                    perror ("Sendto failed");
-                    return 0;
-                }
-            } else {
+                nanosleep((struct timespec[]){{ACKDELAYS, ACKDELAYNS}}, NULL);
+                if (sendto (sockfd, h, sizeof(struct header), 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0)
+                    error ("Sendto failed");
+            } else
                 printf("Requested file %s did not exist or had no data\n", argv[3]);
-            }
         } else { // Unexpected seqno
             printf("Ignoring packet; expected seqno %i\n", seqno);
             h->fin = 0;
