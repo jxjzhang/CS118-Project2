@@ -11,7 +11,7 @@
 #define PSIZE 1000 // Packet size in bytes
 
 #define ACKDELAYS 0 // Delay of sending ACK in seconds
-#define ACKDELAYNS 500000000 // Delay of sending ACK in nanoseconds
+#define ACKDELAYNS 100000000 // Delay of sending ACK in nanoseconds
 
 struct header {
     int seqno;
@@ -71,12 +71,15 @@ void initheader(struct header **h) {
 
 // argv: sender hostname, sender portnumber, filename, Pl, PC
 int main (int argc, char *argv[]) {
-    int sockfd, n, seqno = 0;
+    int sockfd, n, seqno = 0, r;
     struct sockaddr_in serv_addr;
     struct hostent *server;
     struct header *h = 0;
     FILE *fp;
     size_t hsize = sizeof (struct header);
+    
+    // Randomness setup
+    srand(time(NULL));
     
     char buffer[PSIZE + hsize];
     
@@ -127,6 +130,7 @@ int main (int argc, char *argv[]) {
                 nanosleep((struct timespec[]){{ACKDELAYS, ACKDELAYNS}}, NULL);
                 if (sendto (sockfd, h, sizeof(struct header), 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0)
                     error ("Sendto failed");
+                printf("Sending ACK with seqno %i\n", seqno);
             } else
                 printf("Requested file %s did not exist or had no data\n", argv[3]);
         } else {
