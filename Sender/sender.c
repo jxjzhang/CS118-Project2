@@ -1,12 +1,13 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <strings.h>
+#include <unistd.h> 
+#include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <limits.h>
-#include <sys/time.h>
+#include <time.h>
 
 #define PSIZE 1000
 #define DEBUG 1
@@ -123,11 +124,16 @@ void sendpackets(struct packet *p, int sockfd, struct sockaddr_in cli_addr, int 
     }
 }
 
-/*
- *Returns 0 if should send packet, returns 1 if should not
- */
+
+void printtime() {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+
+    printf("%lld.%.9ld: ", (long long)ts.tv_sec%100, ts.tv_nsec);
+}
+
+// Returns 0 if should send packet, returns 1 if should not
 int decideReceive(float p) {
-    
     float num;
     num = (rand() % 100 + 1);
     
@@ -142,28 +148,25 @@ int decideReceive(float p) {
 int main(int argc, char *argv[]) {
     // Socket var
     int sockfd, n, cwnd, maxfdp;
-    float ploss,pcorrupt;
     cwnd = atoi(argv[2]);
     struct sockaddr_in serv_addr, cli_addr;
     socklen_t addrlen;
-    fd_set rset;
-    ploss=atof(argv[3]);
-    pcorrupt=atof(argv[4]);
+    fd_set masterset, rset;
     
     // Timeout setup
     struct timeval timeout;
-    timeout.tv_sec = TIMEOUTS;
-    timeout.tv_usec = TIMEOUTMS;
+	FD_ZERO(&masterset);
     FD_ZERO(&rset);
-    struct timespec ts;
-    
+
     // File var
     FILE *fp;
     size_t f;
     long fsize;
     
-    //Set up random value
+    // Corruption/loss setup
     srand(time(NULL));
+    float ploss = atof(argv[3]);
+    float pcorrupt = atof(argv[4]);
     
     // Packet related var
     struct header *h;
@@ -192,6 +195,7 @@ int main(int argc, char *argv[]) {
     addrlen = sizeof(cli_addr);
     n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
     buffer[n] = 0;
+	if(DEBUG) printtime();
     printf("Received file request for: %s\n", buffer);
     
     fp = fopen (buffer, "r");
@@ -201,7 +205,7 @@ int main(int argc, char *argv[]) {
         h->fin = 1;
         memcpy (buffer, h, hsize);
         buffer[hsize] = 0;
-        if(sendto(sockfd, buffer, f + hsize, 0, (struct sockaddr *)&cli_addr, addrlen) < 0)
+        if(sendto(sockfd, buffer, hsize, 0, (struct sockaddr *)&cli_addr, addrlen) < 0)
             error("Sendto failed");
         free(h); h = 0;
     } else {
@@ -215,32 +219,34 @@ int main(int argc, char *argv[]) {
         size_t f;
         
         // select setup
-        FD_SET(sockfd, &rset);
+        FD_SET(sockfd, &masterset);
         maxfdp = sockfd + 1;
         
         do {
             if (DEBUG) printf("cwndleft:\t%i\n", cwndleft);
             if (DEBUG) printf("sentseqno:\t%i\n", sentseqno);
             
-            while (cwndleft > 0 && sentseqno < fsize) {
+            while(cwndleft > 0 && sentseqno < fsize) {
                 // Populate pfirst thru plast for available bytes in cwnd
                 f = PSIZE < cwndleft ? PSIZE : cwndleft;
                 f = fread(buffer, 1, f, fp);
-                if (DEBUG) printf("Read %lu bytes from file\n", f);
+				if (DEBUG) printtime();
+                if (DEBUG) printf("Read %zu bytes from file\n", f);
                 
                 struct packet *newp = initpacket(f);
                 memcpy(newp->buffer, buffer, f); // Store file contents in packet buffer
                 newp->h->checksum = calcChecksum(newp->buffer,f);
                 newp->length = f;
                 newp->h->seqno = sentseqno;
-                if (f + sentseqno >= fsize)
+                if(f + sentseqno >= fsize)
                     newp->h->fin = 1;
-                if (DEBUG) printf("New packet instantiated with seqno %i\n", newp->h->seqno);
+				if(DEBUG) printtime();
+                if(DEBUG) printf("New packet instantiated with seqno %i\n", newp->h->seqno);
                 
                 // Keep track of the linked list pointers
-                if (!pfirst)
+                if(!pfirst)
                     pfirst = newp;
-                if (plast)
+                if(plast)
                     plast->next = newp;
                 plast = newp;
                 
@@ -250,35 +256,39 @@ int main(int argc, char *argv[]) {
             }
             
             // TODO: Set select() timeout = pfirst's timeout. Resend if times out
+			rset = masterset;
+			timeout.tv_sec = TIMEOUTS;
+			timeout.tv_usec = TIMEOUTMS;
             if((n = select(maxfdp, &rset, NULL, NULL, &timeout)) < 0)
-                error("select failed");
-            if (n == 0) {
+                error("Select failed");
+            if(n == 0) {
+				if(DEBUG) printtime();
                 printf("Timer expired! Resending appropriate packets\n");
                 // Send out packets
                 cwndleft = cwnd;
                 sendpackets(pfirst, sockfd, cli_addr, addrlen, &cwndleft);
             } /* timer expires */
             
+
             if(DEBUG) printf("Return value from select: %i\n", n);
             
             if(FD_ISSET(sockfd, &rset)) { /* socket is readable */
                 if(DEBUG) printf("sockfd is readable\n");
-                if (decideReceive(ploss)||decideReceive(pcorrupt)) {
+            	n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
+                if(decideReceive(ploss) || decideReceive(pcorrupt)) {
                     printf("Triggering ACK ignore because of either loss or corruption\n");
-                    n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
-                    //Recieve ACK, but do nothing with it
-                }else {
-                    n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
-                    if (DEBUG) printf("Return value from recvfrom: %i\n", n);
-                
+                    // Receive ACK, but do nothing with it
+                } else {
                     // Populate h with the ACK
                     initheader(&h);
                     memcpy(h, buffer, hsize);
+					if(DEBUG) printtime();
                     printf("Received ACK\tseqno %i\n", h->seqno);
                 
                     // Parse and process the seqno of the ACK
                     // Optional TODO: (sel repeat): currently assumes cumulative ACK
-                    while (pfirst->h->seqno < h->seqno) {
+                    while(pfirst->h->seqno < h->seqno) {
+						if(DEBUG) printtime();
                         printf("Freeing packet with length %zu and seqno %i\n", pfirst->length, pfirst->h->seqno);
                         cwndleft += pfirst->length;
                         pfirst = freepacket(&pfirst);
@@ -297,5 +307,5 @@ int main(int argc, char *argv[]) {
         } while(ackedseqno < fsize);
     }
     
-    fclose(fp);
+    if (fp) fclose(fp);
 }

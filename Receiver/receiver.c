@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <strings.h>
+#include <unistd.h> 
+#include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netdb.h>
@@ -68,17 +69,16 @@ void initheader(struct header **h) {
     (*h)->checksum = 0;
 }
 
-/*
+
 void printtime() {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
 
-    printf("%lld.%.9ld: ", (long long)ts.tv_sec, ts.tv_nsec);
-}*/
+    printf("%lld.%.9ld: ", (long long)ts.tv_sec%100, ts.tv_nsec);
+}
 
 // Returns 0 if should send packet, returns 1 if should not
 int decideReceive(float p) {
-    
     float num;
     num = (rand() % 100 + 1);
     
@@ -101,8 +101,8 @@ int main (int argc, char *argv[]) {
     
     // Randomness setup
     srand(time(NULL));
-    ploss=atof(argv[3]);
-    pcorrupt=atof(argv[4]);
+    ploss = atof(argv[3]);
+    pcorrupt = atof(argv[4]);
     
     char buffer[PSIZE + hsize];
     
@@ -132,17 +132,16 @@ int main (int argc, char *argv[]) {
     initheader(&h);
     while(!h->fin) {
         // TODO: Use select and submit a cumulative ACK
-        
-        // Introduce corruption on recieving data
+        n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, NULL, 0);
+		memcpy (h, buffer, hsize); 
+        // Introduce corruption on receiving data
         if (decideReceive(ploss) || decideReceive(pcorrupt)) {
-            printf("Triggering data ignore because of either loss or corruption\n");
-            n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, NULL, 0);
-            // Receive data packet but do nothing with it
+			if (DEBUG) printtime();
+            printf("Loss/corruption: Ignoring %i bytes with seqno %i\n", n - hsize, h->seqno);
+			h->fin = 0;
         } else {
-            n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, NULL, 0);
-            memcpy (h, buffer, hsize);
             n -= hsize;
-        
+        	if (DEBUG) printtime();
             printf("Received: %i bytes with seqno %i, checksum %i\n", n, h->seqno, (short int)(h->checksum));
         
             // Received next seqno
@@ -160,11 +159,13 @@ int main (int argc, char *argv[]) {
                     nanosleep((struct timespec[]){{ACKDELAYS, ACKDELAYNS}}, NULL);
                     if (sendto (sockfd, h, sizeof(struct header), 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0)
                         error ("Sendto failed");
+					if (DEBUG) printtime();
                     printf("Sending ACK with seqno %i\n", seqno);
                 } else
                     printf("Requested file %s did not exist or had no data\n", argv[3]);
             } else {
                 // TODO: Send out an ACK requesting the expected seqno
+				if (DEBUG) printtime();
                 printf("Ignoring packet; expected seqno %i\n", seqno);
                 h->fin = 0;
             }
