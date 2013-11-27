@@ -343,18 +343,45 @@ int main(int argc, char *argv[]) {
             }
         } while(ackedseqno < fsize);
 
-
 		// TODO: Gracefully handle closing the connection. Still need to wait for ACK from Receiver after this
-        // Send FIN-ACK packet
+        // Setup FIN-ACK packet
 		h->ack = 1;
 		h->fin = 1;
         memcpy(buffer, h, hsize);
         buffer[hsize] = 0;
-        if (sendto(sockfd, buffer, hsize, 0, (struct sockaddr *)&cli_addr, addrlen) < 0)
-            error("Sendto failed");
-		if(DEBUG) printtime();
-        printf("Sent fin-ack\n");
-    }
+		h->checksum = calcChecksum(buffer,hsize);
+
+		// Send FIN-ACK packet
+		do {
+			struct timespec now;
+			clock_gettime(CLOCK_REALTIME, &now);
+		    if(sendto(sockfd, buffer, hsize, 0, (struct sockaddr *)&cli_addr, addrlen) < 0)
+		        error("Sendto failed");
+			if(DEBUG) printtime();
+		    printf("Sent fin-ack at %lld.%.9ld\n", (long long)now.tv_sec%100, now.tv_nsec);
+			settimeout(&timeout, now);
+			rset = masterset;
+		    if((n = select(maxfdp, &rset, NULL, NULL, &timeout)) < 0)
+		        error("Select failed");
+		    if(n == 0) {
+				if(DEBUG) printtime();
+		        printf("Timer expired! Must resend FIN-ACK packet\n");
+		    } else if(FD_ISSET(sockfd, &rset)) {
+		        // Get the closing ACK
+		    	n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
+				struct header *lastack;
+				initheader(&lastack);
+				memcpy(lastack, buffer, hsize);
+				if(DEBUG) printtime();
+		        printf("ACK received\tseqno %i\n", lastack->seqno);
+				if (lastack->seqno) {
+					printtime(); printf("Not the last ACK. Must resend FIN-ACK.\n");
+					n = 0;
+				}
+				free(lastack); lastack = 0;
+			}
+		} while(n == 0);
+	}
     free(h); h = 0;
     if (fp) fclose(fp);
 }

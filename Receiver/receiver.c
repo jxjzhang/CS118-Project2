@@ -13,6 +13,8 @@
 #define DEBUG 1
 #define PROPDELAYS 0 // Propagation delay in seconds
 #define PROPDELAYNS 200000000 // Delay of sending ACK in nanoseconds
+#define TIMEOUTS 2
+#define TIMEOUTUS 0
 
 struct header {
     int seqno;
@@ -75,6 +77,31 @@ void printtime() {
     clock_gettime(CLOCK_REALTIME, &ts);
 
     printf("%lld.%.9ld: ", (long long)ts.tv_sec%100, ts.tv_nsec);
+}
+
+struct timespec diff(struct timespec start, struct timespec end)
+{
+	struct timespec temp;
+	if((end.tv_nsec - start.tv_nsec)<0) {
+		temp.tv_sec = end.tv_sec - start.tv_sec-1;
+		temp.tv_nsec = 1000000000 + end.tv_nsec - start.tv_nsec;
+	} else {
+		temp.tv_sec = end.tv_sec-start.tv_sec;
+		temp.tv_nsec = end.tv_nsec-start.tv_nsec;
+	}
+	return temp;
+}
+
+void settimeout(struct timeval *timeout, struct timespec origin) {
+	struct timespec now;
+	clock_gettime(CLOCK_REALTIME, &now);
+	struct timespec d = diff(origin, now);
+	struct timespec t; 
+	t.tv_sec = TIMEOUTS;
+	t.tv_nsec = TIMEOUTUS * 1000;
+	t = diff(d, t);
+	timeout->tv_sec = t.tv_sec;
+	timeout->tv_usec = t.tv_nsec/1000;
 }
 
 // Returns 0 if should send packet, returns 1 if should not
@@ -166,7 +193,7 @@ int main (int argc, char *argv[]) {
                     outh->ack = 1;
 					outh->fin = h->fin;
                     nanosleep((struct timespec[]){{PROPDELAYS, PROPDELAYNS}}, NULL);
-                    if (sendto (sockfd, h, sizeof(struct header), 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0)
+                    if (sendto (sockfd, outh, sizeof(struct header), 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0)
                         error ("Sendto failed");
 					if (DEBUG) printtime();
                     printf("Sending ACK with seqno %i\n", outh->seqno);
@@ -179,7 +206,43 @@ int main (int argc, char *argv[]) {
                 } else if (h->ack && h->fin) {
 					if(DEBUG) printtime();
 					printf("Received fin-ack from sender. Done!\n");
-					// TODO: Send back an ACK to sender
+					// Send back an ACK to sender
+					h->seqno = 0;
+					h->ack = 1;
+
+					fd_set masterset, rset;
+					FD_ZERO(&masterset);
+					FD_ZERO(&rset);
+					FD_SET(sockfd, &masterset);
+					int maxfdp = sockfd + 1;
+					do {
+		                nanosleep((struct timespec[]){{PROPDELAYS, PROPDELAYNS}}, NULL);
+						struct timespec now;
+						struct timeval timeout;
+						clock_gettime(CLOCK_REALTIME, &now);
+		                if (sendto (sockfd, h, sizeof(struct header), 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0)
+		                    error ("Sendto failed");
+						if (DEBUG) printtime();
+		                printf("Sent final ACK at %lld.%.9ld\n", (long long)now.tv_sec%100, now.tv_nsec);
+    
+						settimeout(&timeout, now);
+						rset = masterset;
+						if((n = select(maxfdp, &rset, NULL, NULL, &timeout)) < 0)
+							error("Select failed");
+						if(n == 0) {
+							if(DEBUG) printtime();
+							printf("Timer expired! Ending connection\n");
+						} else if(FD_ISSET(sockfd, &rset)) {
+							// Sender is re-sending the FIN-ACK
+							n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, NULL, 0);
+							struct header *lastack;
+							initheader(&lastack);
+							memcpy(lastack, buffer, hsize);
+							if(DEBUG) printtime();
+							printf("FIN-ACK received again\n");
+							free(lastack); lastack = 0;
+						}
+					} while (n > 0); // End when select expires
 					break;
 				} else {
                     printf("Requested file %s did not exist or had no data\n", argv[3]);
