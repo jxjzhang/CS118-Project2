@@ -11,8 +11,8 @@
 
 #define PSIZE 1000 // Packet size in bytes
 #define DEBUG 1
-#define ACKDELAYS 0 // Delay of sending ACK in seconds
-#define ACKDELAYNS 200000000 // Delay of sending ACK in nanoseconds
+#define PROPDELAYS 0 // Propagation delay in seconds
+#define PROPDELAYNS 200000000 // Delay of sending ACK in nanoseconds
 
 struct header {
     int seqno;
@@ -91,6 +91,8 @@ int decideReceive(float p) {
 
 // argv: sender hostname, sender portnumber, filename, Pl, PC
 int main (int argc, char *argv[]) {
+	if(argc < 5) error("Expecting 5 arguments: sender hostname, sender portnumber, filename, Pl, PC\n"); 
+
     int sockfd, n, seqno = 0, r;
     float ploss, pcorrupt;
     struct sockaddr_in serv_addr;
@@ -130,14 +132,18 @@ int main (int argc, char *argv[]) {
     
     // Receive packets from sender
     initheader(&h);
-    while(!h->fin) {
-        // TODO: Use select and submit a cumulative ACK
+    while(!h->fin || !h->ack) {
+		// Wait for data from sender
         n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, NULL, 0);
 		memcpy (h, buffer, hsize); 
-        // Introduce corruption on receiving data
-        if (decideReceive(ploss) || decideReceive(pcorrupt)) {
+        // Introduce corruption/loss on receiving data
+        if (decideReceive(ploss)) {
 			if (DEBUG) printtime();
-            printf("Loss/corruption: Ignoring %i bytes with seqno %i\n", n - hsize, h->seqno);
+            printf("Loss: Ignoring %i bytes with seqno %i\n", n - hsize, h->seqno);
+			h->fin = 0;
+        } else if (decideReceive(pcorrupt)) {
+			if (DEBUG) printtime();
+            printf("Corruption: Ignoring %i bytes with seqno %i\n", n - hsize, h->seqno);
 			h->fin = 0;
         } else {
             n -= hsize;
@@ -154,24 +160,44 @@ int main (int argc, char *argv[]) {
                     printf("Calculated Checksum: %i\n",(short int)calcChecksum(buffer + hsize,n));
                 
                     // Send ACK
-                    h->seqno = seqno;
-                    h->ack = 1;
-                    nanosleep((struct timespec[]){{ACKDELAYS, ACKDELAYNS}}, NULL);
+					struct header *outh; // Outgoing header
+					initheader(&outh);
+                    outh->seqno = seqno;
+                    outh->ack = 1;
+					outh->fin = h->fin;
+                    nanosleep((struct timespec[]){{PROPDELAYS, PROPDELAYNS}}, NULL);
                     if (sendto (sockfd, h, sizeof(struct header), 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0)
                         error ("Sendto failed");
 					if (DEBUG) printtime();
-                    printf("Sending ACK with seqno %i\n", seqno);
-                } else
+                    printf("Sending ACK with seqno %i\n", outh->seqno);
+					if (outh->fin) {
+						if(DEBUG) printtime();
+						printf("File complete. FIN was requested\n");
+						fclose(fp);
+					}
+					free(outh); outh = 0;
+                } else if (h->ack && h->fin) {
+					if(DEBUG) printtime();
+					printf("Received fin-ack from sender. Done!\n");
+					// TODO: Send back an ACK to sender
+					break;
+				} else {
                     printf("Requested file %s did not exist or had no data\n", argv[3]);
+					fclose(fp);
+				}
             } else {
-                // TODO: Send out an ACK requesting the expected seqno
+                // Send out an ACK requesting the expected seqno
+		        h->seqno = seqno;
+		        h->ack = 1;
+		        nanosleep((struct timespec[]){{PROPDELAYS, PROPDELAYNS}}, NULL);
 				if (DEBUG) printtime();
-                printf("Ignoring packet; expected seqno %i\n", seqno);
+                printf("Ignoring packet; expected seqno %i; resending ACK\n", seqno);
+		        if (sendto (sockfd, h, sizeof(struct header), 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0)
+		            error ("Sendto failed");
                 h->fin = 0;
             }
         }
     }
     
     free(h); h = 0;
-    fclose(fp);
 }

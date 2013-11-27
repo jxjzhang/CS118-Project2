@@ -12,7 +12,7 @@
 #define PSIZE 1000
 #define DEBUG 1
 #define TIMEOUTS 2
-#define TIMEOUTMS 0
+#define TIMEOUTUS 0
 
 struct header {
     int seqno;
@@ -26,7 +26,7 @@ struct packet {
     char *buffer;
     short int ack; // Not used for Go-Back-N
     size_t length;
-    /* TODO: Add a time component for when this packet will timeout */
+    struct timespec ts;
     struct packet *next;
 };
 
@@ -100,6 +100,26 @@ struct packet *freepacket (struct packet **p) {
     return next;
 }
 
+void printtime() {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+
+    printf("%lld.%.9ld: ", (long long)ts.tv_sec%100, ts.tv_nsec);
+}
+
+struct timespec diff(struct timespec start, struct timespec end)
+{
+	struct timespec temp;
+	if((end.tv_nsec - start.tv_nsec)<0) {
+		temp.tv_sec = end.tv_sec - start.tv_sec-1;
+		temp.tv_nsec = 1000000000 + end.tv_nsec - start.tv_nsec;
+	} else {
+		temp.tv_sec = end.tv_sec-start.tv_sec;
+		temp.tv_nsec = end.tv_nsec-start.tv_nsec;
+	}
+	return temp;
+}
+
 /*Send set of packets beginning at p
  *sockfd: socket number
  *cli_addr: sockaddr_in of client to send packet to
@@ -118,18 +138,12 @@ void sendpackets(struct packet *p, int sockfd, struct sockaddr_in cli_addr, int 
         // Send packet
         if (sendto(sockfd, buffer, length, 0, (struct sockaddr *)&cli_addr, addrlen) < 0)
             error("Sendto failed");
-        printf("Sent %zu bytes\tseqno %i\tfin %i\n", p->length, p->h->seqno, p->h->fin);
+    	clock_gettime(CLOCK_REALTIME, &p->ts);
+		if(DEBUG) printtime();
+        printf("Sent %zu bytes\tseqno %i\tfin %i\tts %lld.%.9ld\n", p->length, p->h->seqno, p->h->fin, (long long)p->ts.tv_sec%100, p->ts.tv_nsec);
         *cwndleft -= p->length;
         p = p->next;
     }
-}
-
-
-void printtime() {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-
-    printf("%lld.%.9ld: ", (long long)ts.tv_sec%100, ts.tv_nsec);
 }
 
 // Returns 0 if should send packet, returns 1 if should not
@@ -144,11 +158,26 @@ int decideReceive(float p) {
     return 1;
 }
 
+void settimeout(struct timeval *timeout, struct timespec origin) {
+	struct timespec now;
+	clock_gettime(CLOCK_REALTIME, &now);
+	struct timespec d = diff(origin, now);
+	struct timespec t; 
+	t.tv_sec = TIMEOUTS;
+	t.tv_nsec = TIMEOUTUS * 1000;
+	t = diff(d, t);
+	timeout->tv_sec = t.tv_sec;
+	timeout->tv_usec = t.tv_nsec/1000;
+}
+
 // argv: portnumber, Cwnd, Pl, PC
 int main(int argc, char *argv[]) {
+	if(argc < 5) error("Expecting 5 arguments: portnumber, Cwnd, Pl, PC\n"); 	
+	
     // Socket var
     int sockfd, n, cwnd, maxfdp;
     cwnd = atoi(argv[2]);
+	if (cwnd < PSIZE) error("cwnd cannot be smaller than packet size\n");
     struct sockaddr_in serv_addr, cli_addr;
     socklen_t addrlen;
     fd_set masterset, rset;
@@ -221,6 +250,7 @@ int main(int argc, char *argv[]) {
         // select setup
         FD_SET(sockfd, &masterset);
         maxfdp = sockfd + 1;
+		initheader(&h);
         
         do {
             if (DEBUG) printf("cwndleft:\t%i\n", cwndleft);
@@ -257,8 +287,14 @@ int main(int argc, char *argv[]) {
             
             // TODO: Set select() timeout = pfirst's timeout. Resend if times out
 			rset = masterset;
-			timeout.tv_sec = TIMEOUTS;
-			timeout.tv_usec = TIMEOUTMS;
+			if (!pfirst) {
+				timeout.tv_sec = TIMEOUTS;
+				timeout.tv_usec = TIMEOUTUS;
+			} else { // Set the timeout appropriately for oldest unACKed packet (pfirst)
+				settimeout(&timeout, pfirst->ts);
+				printtime();
+				printf("Setting timeout to %lld.%.6ld for data packet seqno %i\n", (long long)timeout.tv_sec%100, timeout.tv_usec, pfirst->h->seqno);
+			}
             if((n = select(maxfdp, &rset, NULL, NULL, &timeout)) < 0)
                 error("Select failed");
             if(n == 0) {
@@ -268,20 +304,19 @@ int main(int argc, char *argv[]) {
                 cwndleft = cwnd;
                 sendpackets(pfirst, sockfd, cli_addr, addrlen, &cwndleft);
             } /* timer expires */
-            
-
-            if(DEBUG) printf("Return value from select: %i\n", n);
-            
             if(FD_ISSET(sockfd, &rset)) { /* socket is readable */
-                if(DEBUG) printf("sockfd is readable\n");
+                // Populate h with the ACK
             	n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
-                if(decideReceive(ploss) || decideReceive(pcorrupt)) {
-                    printf("Triggering ACK ignore because of either loss or corruption\n");
-                    // Receive ACK, but do nothing with it
+				memcpy(h, buffer, hsize);
+                if(decideReceive(ploss)) {
+					if(DEBUG) printtime();
+                    printf("Loss: ignoring ACK for seqno %i\n", h->seqno);
+                    // Receive ACK, but do nothing
+                } else if(decideReceive(pcorrupt)) {
+					if(DEBUG) printtime();
+                    printf("Corruption: ignoring ACK for seqno %i\n", h->seqno);
+                    // Receive ACK, but do nothing
                 } else {
-                    // Populate h with the ACK
-                    initheader(&h);
-                    memcpy(h, buffer, hsize);
 					if(DEBUG) printtime();
                     printf("Received ACK\tseqno %i\n", h->seqno);
                 
@@ -292,8 +327,10 @@ int main(int argc, char *argv[]) {
                         printf("Freeing packet with length %zu and seqno %i\n", pfirst->length, pfirst->h->seqno);
                         cwndleft += pfirst->length;
                         pfirst = freepacket(&pfirst);
-                        if (!pfirst)
+                        if (!pfirst) {
+							plast = 0;
                             break;
+						}
                     }
                     if (pfirst && pfirst->h->seqno == h->seqno) {
                         pfirst->ack++;
@@ -301,11 +338,23 @@ int main(int argc, char *argv[]) {
                     ackedseqno = (h->seqno > ackedseqno ? h->seqno : ackedseqno);
                 
                     // Optional TODO (sel repeat): if any packet has received 3rd dupe ACK, then rtxmit
-                    free(h); h = 0;
                 }
+
             }
         } while(ackedseqno < fsize);
+
+
+		// TODO: Gracefully handle closing the connection. Still need to wait for ACK from Receiver after this
+        // Send FIN-ACK packet
+		h->ack = 1;
+		h->fin = 1;
+        memcpy(buffer, h, hsize);
+        buffer[hsize] = 0;
+        if (sendto(sockfd, buffer, hsize, 0, (struct sockaddr *)&cli_addr, addrlen) < 0)
+            error("Sendto failed");
+		if(DEBUG) printtime();
+        printf("Sent fin-ack\n");
     }
-    
+    free(h); h = 0;
     if (fp) fclose(fp);
 }
