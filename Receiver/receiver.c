@@ -9,9 +9,9 @@
 #include <time.h>
 
 #define PSIZE 1000 // Packet size in bytes
-
+#define DEBUG 1
 #define ACKDELAYS 0 // Delay of sending ACK in seconds
-#define ACKDELAYNS 100000000 // Delay of sending ACK in nanoseconds
+#define ACKDELAYNS 200000000 // Delay of sending ACK in nanoseconds
 
 struct header {
     int seqno;
@@ -69,15 +69,21 @@ void initheader(struct header **h) {
 }
 
 /*
- *Returns 0 if should send packet, returns 1 if should not
- */
-int decideReceive(float ploss) {
+void printtime() {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+
+    printf("%lld.%.9ld: ", (long long)ts.tv_sec, ts.tv_nsec);
+}*/
+
+// Returns 0 if should send packet, returns 1 if should not
+int decideReceive(float p) {
     
     float num;
-    num=(rand() % 100 + 1);
+    num = (rand() % 100 + 1);
     
     float t=num/100;
-    if (t>ploss) {
+    if(t > p) {
         return 0;
     }
     return 1;
@@ -127,12 +133,12 @@ int main (int argc, char *argv[]) {
     while(!h->fin) {
         // TODO: Use select and submit a cumulative ACK
         
-        //Introduce corruption on recieving data
-        if (decideReceive(ploss)||decideReceive(pcorrupt)) {
+        // Introduce corruption on recieving data
+        if (decideReceive(ploss) || decideReceive(pcorrupt)) {
             printf("Triggering data ignore because of either loss or corruption\n");
             n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, NULL, 0);
-            //Recieve data packet but do nothing with it
-        }else {
+            // Receive data packet but do nothing with it
+        } else {
             n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, NULL, 0);
             memcpy (h, buffer, hsize);
             n -= hsize;

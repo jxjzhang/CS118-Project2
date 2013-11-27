@@ -126,13 +126,13 @@ void sendpackets(struct packet *p, int sockfd, struct sockaddr_in cli_addr, int 
 /*
  *Returns 0 if should send packet, returns 1 if should not
  */
-int decideReceive(float ploss) {
+int decideReceive(float p) {
     
     float num;
-    num=(rand() % 100 + 1);
+    num = (rand() % 100 + 1);
     
     float t=num/100;
-    if (t>ploss) {
+    if (t > p) {
         return 0;
     }
     return 1;
@@ -253,9 +253,9 @@ int main(int argc, char *argv[]) {
             if((n = select(maxfdp, &rset, NULL, NULL, &timeout)) < 0)
                 error("select failed");
             if (n == 0) {
-                printf("Timer expired! TODO: Resend appropriate packets\n");
+                printf("Timer expired! Resending appropriate packets\n");
                 // Send out packets
-                cwndleft=cwnd;
+                cwndleft = cwnd;
                 sendpackets(pfirst, sockfd, cli_addr, addrlen, &cwndleft);
             } /* timer expires */
             
