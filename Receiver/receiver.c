@@ -212,16 +212,18 @@ int main (int argc, char *argv[]) {
 
 				if (sendto (sockfd, buffer, length, 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0)
 					error ("Sendto failed");
-
-				break;
+				
+				n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, NULL, 0);
+				if((n-hsize)>0) {
+					//Recieved the first packet of data so 3 way handshake was successful
+					break;
+				}
 			 }
 		}
 	} while (1);
     
     // Open file for writing
     fp = fopen(argv[3], "w");
-    
-	n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, NULL, 0);
 
     // Receive packets from sender
     initheader(&h);
@@ -338,4 +340,3 @@ int main (int argc, char *argv[]) {
     
     free(h); h = 0;
 }
-
