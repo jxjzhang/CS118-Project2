@@ -18,6 +18,7 @@ struct header {
     int seqno;
     char fin;
     char ack;
+	char syn;
     short int checksum;
 };
 
@@ -75,6 +76,7 @@ void initheader(struct header **h) {
     (*h)->seqno = 0;
     (*h)->fin = 0;
     (*h)->ack = 0;
+	(*h)->syn = 0;
     (*h)->checksum = 0;
 }
 
@@ -217,16 +219,59 @@ int main(int argc, char *argv[]) {
     // Bind socket
     if(bind(sockfd, (struct sockaddr *)&serv_addr,sizeof(serv_addr)) < 0)
         error("Error on bind");
+	
+	//Initiate 3-Way handshake
+	// Get the opening SYN
+	n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
     
-    // Obtain file request
-    // TODO: Standardize request to use header(?)
-    // TODO: Use select(?)
-    addrlen = sizeof(cli_addr);
-    n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
-    buffer[n] = 0;
-	if(DEBUG) printtime();
-    printf("Received file request for: %s\n", buffer);
-    
+	FD_ZERO(&masterset);
+	FD_ZERO(&rset);
+	FD_SET(sockfd, &masterset);
+	do {
+		struct timespec now;
+		clock_gettime(CLOCK_REALTIME, &now);
+		settimeout(&timeout, now);
+		rset = masterset;
+
+		if(DEBUG) printtime();
+		    printf("SYN received\n");
+
+		//Construct SYNACK response
+		struct header *hsyn;
+		initheader(&hsyn);
+		hsyn->ack = 1;
+		hsyn->syn = 1;
+		memcpy(buffer, hsyn, hsize);
+		//Send SYNACK
+		if(sendto(sockfd, buffer, hsize, 0, (struct sockaddr *)&cli_addr, addrlen) < 0)
+			error("Sendto failed");
+
+		if((n = select(maxfdp, &rset, NULL, NULL, &timeout)) < 0)
+		     error("Select failed");
+		if(n == 0) {
+			if(DEBUG) printtime();
+		        printf("No ACK recieved resending SYNACK.\n");
+		} else if(FD_ISSET(sockfd, &rset)) {
+			//ACK for SYN recieved, piggybacked with data
+			// Obtain file request
+			addrlen = sizeof(cli_addr);
+			n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
+
+			//Parse the packet and save into buffer
+			memcpy(hsyn,buffer,hsize);
+			memcpy(buffer,buffer+hsize,n-hsize);
+			buffer[n-hsize]=0;
+
+			//buffer[n] = 0;
+			if(DEBUG) printtime();
+				printf("Received file request for: %s\n", buffer);
+
+			break;
+		}
+		free(hsyn);
+	} while(1);
+
+    //File Name is saved into buffer
     fp = fopen (buffer, "r");
     if (fp == 0) { // fopen fails
         printf("Requested file %s does not exist\n", buffer);
@@ -378,6 +423,7 @@ int main(int argc, char *argv[]) {
 					printtime(); printf("Not the last ACK. Must resend FIN-ACK.\n");
 					n = 0;
 				}
+				close(sockfd);
 				free(lastack); lastack = 0;
 			}
 		} while(n == 0);
