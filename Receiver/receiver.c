@@ -156,6 +156,7 @@ int main (int argc, char *argv[]) {
 	FD_ZERO(&rset);
 	FD_SET(sockfd, &masterset);
     int maxfdp = sockfd + 1;
+	
 	//Init Header for SYN request
 	struct header *synh; 
 	initheader(&synh);
@@ -167,12 +168,15 @@ int main (int argc, char *argv[]) {
 	struct timeval timeout;
 
 	do {
+		synh->seqno = 0;
+		synh->ack = 0;
+		synh->syn = 1;
 		nanosleep((struct timespec[]){{PROPDELAYS, PROPDELAYNS}}, NULL);
 		clock_gettime(CLOCK_REALTIME, &now);
 		settimeout(&timeout, now);
 		memcpy(buffer, synh, hsize);
         buffer[hsize] = 0;
-		
+
 		rset = masterset;
 		if (sendto (sockfd, buffer, hsize, 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0)
 			error ("Sendto failed");
@@ -187,36 +191,47 @@ int main (int argc, char *argv[]) {
 		} else if(FD_ISSET(sockfd, &rset)) {
 			//SYN has been received
 			n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, NULL, 0);
-			printf("SYNACK received. Sending File Request\n");
+			//Decide if it got lost or not
+			if (decideReceive(ploss)) {
+				if (DEBUG) printtime();
+				printf("Loss on SYNACK: Ignoring %i bytes with seqno %i\n", n - hsize, synh->seqno);
+			 } else if (decideReceive(pcorrupt)) {
+				if (DEBUG) printtime();
+				printf("Corruption on SYNACK: Ignoring %i bytes with seqno %i\n", n - hsize, synh->seqno);
+			} else {
+				printf("Sending File Request\n");
+				//Send file and final ACK here
+				// Initiate file request from sender
+				size_t length = strlen(argv[3]) + sizeof(struct header);
+				synh->ack = 1;
+				synh->syn = 0;
+				// Fill out the buffer
+				memset(buffer, '\0', length);
+				memcpy(buffer, synh, sizeof(struct header));
+				memcpy(buffer + sizeof(struct header), argv[3], strlen(argv[3]));
 
-			//Send file and final ACK here
-			// Initiate file request from sender
-			size_t length = strlen(argv[3]) + sizeof(struct header);
-			synh->ack = 1;
-			synh->syn = 0;
-			// Fill out the buffer
-			memset(buffer, '\0', length);
-			memcpy(buffer, synh, sizeof(struct header));
-			memcpy(buffer + sizeof(struct header), argv[3], strlen(argv[3]));
+				if (sendto (sockfd, buffer, length, 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0)
+					error ("Sendto failed");
 
-
-			if (sendto (sockfd, buffer, length, 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0)
-				error ("Sendto failed");
-			//if (sendto (sockfd, argv[3], strlen(argv[3]), 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0)
-				//error ("Sendto failed");
-
-			break;
+				break;
+			 }
 		}
 	} while (1);
     
     // Open file for writing
     fp = fopen(argv[3], "w");
     
+	n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, NULL, 0);
+
     // Receive packets from sender
     initheader(&h);
+	int init=0;
     while(!h->fin || !h->ack) {
 		// Wait for data from sender
-        n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, NULL, 0);
+		if (init!=0) {
+			n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, NULL, 0);
+		}
+		init=1;
 		memcpy (h, buffer, hsize); 
         // Introduce corruption/loss on receiving data
         if (decideReceive(ploss)) {
@@ -323,3 +338,4 @@ int main (int argc, char *argv[]) {
     
     free(h); h = 0;
 }
+
