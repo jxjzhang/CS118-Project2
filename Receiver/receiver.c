@@ -20,6 +20,7 @@ struct header {
     int seqno;
     char fin;
     char ack;
+	char syn;
     short int checksum;
 };
 
@@ -68,6 +69,7 @@ void initheader(struct header **h) {
     (*h)->seqno = 0;
     (*h)->fin = 0;
     (*h)->ack = 0;
+	(*h)->syn = 0;
     (*h)->checksum = 0;
 }
 
@@ -148,11 +150,64 @@ int main (int argc, char *argv[]) {
     memcpy ((void *)&serv_addr.sin_addr, server->h_addr_list[0], server->h_length);
     serv_addr.sin_port = htons(atoi(argv[2]));
     
+	// Initiate Connection (3-way handshake to establish connection)
+	fd_set masterset, rset;
+	FD_ZERO(&masterset);
+	FD_ZERO(&rset);
+	FD_SET(sockfd, &masterset);
+    int maxfdp = sockfd + 1;
+	//Init Header for SYN request
+	struct header *synh; 
+	initheader(&synh);
+    synh->seqno = 0;
+    synh->ack = 0;
+	synh->syn = 1;
+
+	struct timespec now;
+	struct timeval timeout;
+
+	do {
+		nanosleep((struct timespec[]){{PROPDELAYS, PROPDELAYNS}}, NULL);
+		clock_gettime(CLOCK_REALTIME, &now);
+		settimeout(&timeout, now);
+		memcpy(buffer, synh, hsize);
+        buffer[hsize] = 0;
+		
+		rset = masterset;
+		if (sendto (sockfd, buffer, hsize, 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0)
+			error ("Sendto failed");
+		if (DEBUG) printtime();
+			printf("Sent SYN at %lld.%.9ld\n", (long long)now.tv_sec%100, now.tv_nsec);
     
-    // Initiate file request from sender
-    // TODO: Standardize this request with header (?)
-    if (sendto (sockfd, argv[3], strlen(argv[3]), 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0)
-        error ("Sendto failed");
+		if((n = select(maxfdp, &rset, NULL, NULL, &timeout)) < 0)
+			error("Select failed");
+		if(n == 0) {
+			if(DEBUG) printtime();
+				printf("Timer expired. Resending SYN\n");//Need to resend SYN, must have been lost
+		} else if(FD_ISSET(sockfd, &rset)) {
+			//SYN has been received
+			n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, NULL, 0);
+			printf("SYNACK received. Sending File Request\n");
+
+			//Send file and final ACK here
+			// Initiate file request from sender
+			size_t length = strlen(argv[3]) + sizeof(struct header);
+			synh->ack = 1;
+			synh->syn = 0;
+			// Fill out the buffer
+			memset(buffer, '\0', length);
+			memcpy(buffer, synh, sizeof(struct header));
+			memcpy(buffer + sizeof(struct header), argv[3], strlen(argv[3]));
+
+
+			if (sendto (sockfd, buffer, length, 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0)
+				error ("Sendto failed");
+			//if (sendto (sockfd, argv[3], strlen(argv[3]), 0, (struct sockaddr *)&serv_addr, sizeof (serv_addr)) < 0)
+				//error ("Sendto failed");
+
+			break;
+		}
+	} while (1);
     
     // Open file for writing
     fp = fopen(argv[3], "w");
@@ -232,6 +287,7 @@ int main (int argc, char *argv[]) {
 						if(n == 0) {
 							if(DEBUG) printtime();
 							printf("Timer expired! Ending connection\n");
+							close(sockfd);
 						} else if(FD_ISSET(sockfd, &rset)) {
 							// Sender is re-sending the FIN-ACK
 							n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, NULL, 0);
@@ -247,6 +303,9 @@ int main (int argc, char *argv[]) {
 				} else {
                     printf("Requested file %s did not exist or had no data\n", argv[3]);
 					fclose(fp);
+					//Remove file created
+					int status=remove(argv[3]);
+					break;
 				}
             } else {
                 // Send out an ACK requesting the expected seqno
