@@ -273,13 +273,24 @@ int main(int argc, char *argv[]) {
 			memcpy(hsyn,buffer,hsize);
 			memcpy(buffer,buffer+hsize,n-hsize);
 			buffer[n-hsize]=0;
-
-			//Check to make sure it is a ACK with file request
-			//buffer[n] = 0;
-			if (hsyn->ack==1) {
+			//Decide to actually recieve the file request
+			if(decideReceive(ploss)) {
 				if(DEBUG) printtime();
+                printf("Loss: ignoring File Request\n");
+                // Receive ACK, but do nothing
+			} else if(decideReceive(pcorrupt)) {
+				if(DEBUG) printtime();
+                printf("Corruption: ignoring File Request\n");
+                // Receive ACK, but do nothing
+            } else {
+
+				//Check to make sure it is a ACK with file request
+				//buffer[n] = 0;
+				if (hsyn->ack==1) {
+					if(DEBUG) printtime();
 					printf("Received file request for: %s\n", buffer);
-				break;
+					break;
+				}
 			}
 		}
 		free(hsyn);
