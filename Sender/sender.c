@@ -222,7 +222,20 @@ int main(int argc, char *argv[]) {
 	
 	//Initiate 3-Way handshake
 	// Get the opening SYN
-	n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
+	while (1) {
+		n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
+		if(decideReceive(ploss)) {
+			if(DEBUG) printtime();
+            printf("Loss: ignoring SYN\n");
+            // Receive SYN, but do nothing and wait for next SYN
+        } else if(decideReceive(pcorrupt)) {
+			if(DEBUG) printtime();
+            printf("Corruption: ignoring SYN\n");
+           // Receive SYN, but do nothing and wait for next SYN
+        } else {
+			break;
+		}
+	}
     
 	FD_ZERO(&masterset);
 	FD_ZERO(&rset);
@@ -252,7 +265,6 @@ int main(int argc, char *argv[]) {
 			if(DEBUG) printtime();
 		        printf("No ACK recieved resending SYNACK.\n");
 		} else if(FD_ISSET(sockfd, &rset)) {
-			//ACK for SYN recieved, piggybacked with data
 			// Obtain file request
 			addrlen = sizeof(cli_addr);
 			n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
@@ -262,11 +274,13 @@ int main(int argc, char *argv[]) {
 			memcpy(buffer,buffer+hsize,n-hsize);
 			buffer[n-hsize]=0;
 
+			//Check to make sure it is a ACK with file request
 			//buffer[n] = 0;
-			if(DEBUG) printtime();
-				printf("Received file request for: %s\n", buffer);
-
-			break;
+			if (hsyn->ack==1) {
+				if(DEBUG) printtime();
+					printf("Received file request for: %s\n", buffer);
+				break;
+			}
 		}
 		free(hsyn);
 	} while(1);
