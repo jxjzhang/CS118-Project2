@@ -132,8 +132,8 @@ int main (int argc, char *argv[]) {
     
     // Randomness setup
     srand(time(NULL));
-    ploss = atof(argv[3]);
-    pcorrupt = atof(argv[4]);
+    ploss = atof(argv[4]);
+    pcorrupt = atof(argv[5]);
     
     char buffer[PSIZE + hsize];
     
@@ -199,7 +199,8 @@ int main (int argc, char *argv[]) {
 				if (DEBUG) printtime();
 				printf("Corruption on SYNACK: Ignoring %i bytes with seqno %i\n", n - hsize, synh->seqno);
 			} else {
-				printf("Sending File Request\n");
+				printtime(); printf("Successfully received SYNACK\n");
+				printtime(); printf("Sending piggybacked file request on ACK\n");
 				//Send file and final ACK here
 				// Initiate file request from sender
 				size_t length = strlen(argv[3]) + sizeof(struct header);
@@ -256,7 +257,7 @@ int main (int argc, char *argv[]) {
                     fwrite(buffer + hsize, 1, n, fp);
                 
                     //Calculate Checksum
-                    printf("Calculated Checksum: %i\n",(short int)calcChecksum(buffer + hsize,n));
+                    //printf("Calculated Checksum: %i\n",(short int)calcChecksum(buffer + hsize,n));
                 
                     // Send ACK
 					struct header *outh; // Outgoing header
@@ -271,7 +272,7 @@ int main (int argc, char *argv[]) {
                     printf("Sending ACK with seqno %i\n", outh->seqno);
 					if (outh->fin) {
 						if(DEBUG) printtime();
-						printf("File complete. FIN was requested\n");
+						printf("File complete. FIN was requested in the prior ACK\n");
 						fclose(fp);
 					}
 					free(outh); outh = 0;

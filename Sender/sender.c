@@ -224,6 +224,7 @@ int main(int argc, char *argv[]) {
 	// Get the opening SYN
 	while (1) {
 		n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
+		printtime(); printf("Received from port: %i\n", ntohs(cli_addr.sin_port));
 		if(decideReceive(ploss)) {
 			if(DEBUG) printtime();
             printf("Loss: ignoring SYN\n");
@@ -258,6 +259,8 @@ int main(int argc, char *argv[]) {
 		//Send SYNACK		
 		if(sendto(sockfd, buffer, hsize, 0, (struct sockaddr *)&cli_addr, addrlen) < 0)
 			error("Sendto failed");
+		printtime();
+		printf("Sent SYNACK\n");
 		if((n = select(maxfdp, &rset, NULL, NULL, &timeout)) < 0)
 		     error("Select failed");
 		if(n == 0) {
@@ -318,8 +321,8 @@ int main(int argc, char *argv[]) {
 		initheader(&h);
         
         do {
-            if (DEBUG) printf("cwndleft:\t%i\n", cwndleft);
-            if (DEBUG) printf("sentseqno:\t%i\n", sentseqno);
+            // if (DEBUG) printf("cwndleft:\t%i\n", cwndleft);
+            // if (DEBUG) printf("sentseqno:\t%i\n", sentseqno);
             
             while(cwndleft > 0 && sentseqno < fsize) {
                 // Populate pfirst thru plast for available bytes in cwnd
