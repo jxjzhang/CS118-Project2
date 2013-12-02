@@ -275,7 +275,7 @@ int main(int argc, char *argv[]) {
 			memcpy(buffer,buffer+hsize,n-hsize);
 			buffer[n-hsize]=0;
 			//Decide to actually recieve the file request
-			if(decideReceive(ploss)) {
+			/*if(decideReceive(ploss)) {
 				if(DEBUG) printtime();
                 printf("Loss: ignoring File Request\n");
                 // Receive ACK, but do nothing
@@ -283,7 +283,7 @@ int main(int argc, char *argv[]) {
 				if(DEBUG) printtime();
                 printf("Corruption: ignoring File Request\n");
                 // Receive ACK, but do nothing
-            } else {
+            } else */ if (1) {
 
 				//Check to make sure it is a ACK with file request
 				//buffer[n] = 0;

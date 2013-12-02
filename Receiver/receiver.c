@@ -192,13 +192,14 @@ int main (int argc, char *argv[]) {
 			//SYN has been received
 			n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, NULL, 0);
 			//Decide if it got lost or not
-			if (decideReceive(ploss)) {
+			/*if (decideReceive(ploss)) {
 				if (DEBUG) printtime();
 				printf("Loss on SYNACK: Ignoring %i bytes with seqno %i\n", n - hsize, synh->seqno);
 			 } else if (decideReceive(pcorrupt)) {
 				if (DEBUG) printtime();
 				printf("Corruption on SYNACK: Ignoring %i bytes with seqno %i\n", n - hsize, synh->seqno);
-			} else {
+			} else */
+			if (1) {
 				printtime(); printf("Successfully received SYNACK\n");
 				printtime(); printf("Sending piggybacked file request on ACK\n");
 				//Send file and final ACK here
@@ -216,7 +217,7 @@ int main (int argc, char *argv[]) {
 				
 				n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, NULL, 0);
 				if((n-hsize)>0) {
-					//Recieved the first packet of data so 3 way handshake was successful
+					// Received the first packet of data so 3 way handshake was successful
 					break;
 				}
 			 }
