@@ -181,7 +181,7 @@ int main(int argc, char *argv[]) {
     cwnd = atoi(argv[2]);
 	if (cwnd < PSIZE) error("cwnd cannot be smaller than packet size\n");
     struct sockaddr_in serv_addr, cli_addr;
-    socklen_t addrlen;
+    socklen_t addrlen = sizeof(cli_addr);
     fd_set masterset, rset;
     
     // Timeout setup
@@ -214,7 +214,7 @@ int main(int argc, char *argv[]) {
     memset((char *)&serv_addr, 0, sizeof (serv_addr));
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = INADDR_ANY;
-    serv_addr.sin_port = htons(atoi (argv[1]));
+    serv_addr.sin_port = htons(atoi(argv[1]));
     
     // Bind socket
     if(bind(sockfd, (struct sockaddr *)&serv_addr,sizeof(serv_addr)) < 0)
@@ -236,18 +236,18 @@ int main(int argc, char *argv[]) {
 			break;
 		}
 	}
+	if(DEBUG) printtime();
+	printf("SYN received\n");
     
 	FD_ZERO(&masterset);
 	FD_ZERO(&rset);
 	FD_SET(sockfd, &masterset);
+	maxfdp = sockfd + 1;
 	do {
 		struct timespec now;
 		clock_gettime(CLOCK_REALTIME, &now);
 		settimeout(&timeout, now);
 		rset = masterset;
-
-		if(DEBUG) printtime();
-		    printf("SYN received\n");
 
 		//Construct SYNACK response
 		struct header *hsyn;
@@ -255,18 +255,16 @@ int main(int argc, char *argv[]) {
 		hsyn->ack = 1;
 		hsyn->syn = 1;
 		memcpy(buffer, hsyn, hsize);
-		//Send SYNACK
+		//Send SYNACK		
 		if(sendto(sockfd, buffer, hsize, 0, (struct sockaddr *)&cli_addr, addrlen) < 0)
 			error("Sendto failed");
-
 		if((n = select(maxfdp, &rset, NULL, NULL, &timeout)) < 0)
 		     error("Select failed");
 		if(n == 0) {
 			if(DEBUG) printtime();
-		        printf("No ACK recieved resending SYNACK.\n");
+		        printf("No ACK received resending SYNACK.\n");
 		} else if(FD_ISSET(sockfd, &rset)) {
 			// Obtain file request
-			addrlen = sizeof(cli_addr);
 			n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
 
 			//Parse the packet and save into buffer
@@ -317,9 +315,6 @@ int main(int argc, char *argv[]) {
         int cwndleft = cwnd;
         size_t f;
         
-        // select setup
-        FD_SET(sockfd, &masterset);
-        maxfdp = sockfd + 1;
 		initheader(&h);
         
         do {
