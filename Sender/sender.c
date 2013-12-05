@@ -234,9 +234,8 @@ int main(int argc, char *argv[]) {
 			if(DEBUG) printtime();
             printf("Corruption: ignoring SYN\n");
            // Receive SYN, but do nothing and wait for next SYN
-        } else {
+        } else {*/
 			break;
-		}*/
 	}
 	if(DEBUG) printtime();
 	printf("SYN received\n");
@@ -343,8 +342,10 @@ int main(int argc, char *argv[]) {
                 if(DEBUG) printf("New packet instantiated with seqno %i\n", newp->h->seqno);
                 
                 // Keep track of the linked list pointers
-                if(!pfirst)
+                if(!pfirst) {
                     pfirst = newp;
+					pfirst->ack++; // INSERT
+				}
                 if(plast)
                     plast->next = newp;
                 plast = newp;
@@ -405,7 +406,7 @@ int main(int argc, char *argv[]) {
                         pfirst->ack++;
 						// INSERT HERE:
                         // Trigger windback and resubmission if applicable
-                        if (pfirst->ack > 1 || pfirst->h->seqno == 0) {
+                        if (pfirst->ack > 1) {
                             printtime(); printf("Triggering windback due to duplicate ACK on seqno %i\n", pfirst->h->seqno);
                             cwndleft = cwnd;
                             sendpackets(pfirst, sockfd, cli_addr, addrlen, &cwndleft);
