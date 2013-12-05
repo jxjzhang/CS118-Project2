@@ -225,7 +225,8 @@ int main(int argc, char *argv[]) {
 	while (1) {
 		n = recvfrom(sockfd, buffer, PSIZE + hsize, 0, (struct sockaddr *)&cli_addr, &addrlen);
 		printtime(); printf("Received from port: %i\n", ntohs(cli_addr.sin_port));
-		if(decideReceive(ploss)) {
+		// COMMENT THIS PART OUT
+		/*if(decideReceive(ploss)) {
 			if(DEBUG) printtime();
             printf("Loss: ignoring SYN\n");
             // Receive SYN, but do nothing and wait for next SYN
@@ -235,7 +236,7 @@ int main(int argc, char *argv[]) {
            // Receive SYN, but do nothing and wait for next SYN
         } else {
 			break;
-		}
+		}*/
 	}
 	if(DEBUG) printtime();
 	printf("SYN received\n");
@@ -402,6 +403,14 @@ int main(int argc, char *argv[]) {
                     }
                     if (pfirst && pfirst->h->seqno == h->seqno) {
                         pfirst->ack++;
+						// INSERT HERE:
+                        // Trigger windback and resubmission if applicable
+                        if (pfirst->ack > 1 || pfirst->h->seqno == 0) {
+                            printtime(); printf("Triggering windback due to duplicate ACK on seqno %i\n", pfirst->h->seqno);
+                            cwndleft = cwnd;
+                            sendpackets(pfirst, sockfd, cli_addr, addrlen, &cwndleft);
+                        }
+						// END INSERT
                     }
                     ackedseqno = (h->seqno > ackedseqno ? h->seqno : ackedseqno);
                 
@@ -446,11 +455,13 @@ int main(int argc, char *argv[]) {
 					printtime(); printf("Not the last ACK. Must resend FIN-ACK.\n");
 					n = 0;
 				}
-				close(sockfd);
+				
 				free(lastack); lastack = 0;
 			}
 		} while(n == 0);
 	}
     free(h); h = 0;
+	// MOVE THIS PART
+	close(sockfd);
     if (fp) fclose(fp);
 }
